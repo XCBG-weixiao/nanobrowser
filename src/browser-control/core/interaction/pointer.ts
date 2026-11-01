@@ -14,6 +14,8 @@ import type { GateResult } from './gate';
 import { preflightNavigation } from './preflight';
 import { sendWithheld } from './withheld';
 import { dialogDetail, quote } from '../text';
+import { scopedDialog } from '../url-policy';
+import type { UrlPolicy } from '../url-policy';
 
 export interface DialogInfo {
   type: string;
@@ -37,10 +39,13 @@ export function modifierMask(modifiers: string[] | undefined): number {
 }
 
 /** Resolves with the next JavaScript dialog on any session of the tab, until disposed. */
-export function watchDialog(cdp: CdpPort) {
+export function watchDialog(cdp: CdpPort, policy?: UrlPolicy) {
   let resolveDialog!: (d: DialogInfo) => void;
   const opened = new Promise<DialogInfo>(resolve => (resolveDialog = resolve));
-  const off = cdp.on('Page.javascriptDialogOpening', params => resolveDialog(params as DialogInfo));
+  const off = cdp.on('Page.javascriptDialogOpening', params => {
+    const dialog = params as DialogInfo;
+    resolveDialog(policy ? scopedDialog(dialog, policy) : dialog);
+  });
   return { opened, dispose: off };
 }
 
@@ -217,7 +222,7 @@ export async function dispatchClick(
   const { cdp } = await ctx.attach();
   const tab = ctx.tab();
   const ancestors = await armGuards(ctx, target);
-  const dialog = watchDialog(cdp);
+  const dialog = watchDialog(cdp, ctx.session.urlPolicy);
   const base = { x: point.x, y: point.y, modifiers: modifierMask(options.modifiers), button: options.button ?? 'left' };
   const count = options.count ?? 1;
   tab.actionSeq++;

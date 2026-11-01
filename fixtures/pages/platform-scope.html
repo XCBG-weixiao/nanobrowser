@@ -1,0 +1,12 @@
+<!doctype html>
+<html lang="en">
+  <head><meta charset="utf-8"><title>Platform scope fixture</title></head>
+  <body>
+    <h1>Authorized platform</h1>
+    <button onclick="document.querySelector('#result').textContent='Clicked authorized button'">Read allowed result</button>
+    <p id="result">Waiting</p>
+    <input aria-label="Allowed input">
+    <iframe title="Excluded same-origin frame" src="/platform-scope-outside.html"></iframe>
+    <iframe title="Excluded other-origin frame" src="http://127.0.0.1:8787/platform-scope-outside.html"></iframe>
+  </body>
+</html>

@@ -8,10 +8,14 @@ import { withPageState } from './navigate';
 import { dialogDetail } from '../text';
 import { siteOf } from '../site';
 import type { UserStepDetails } from '../../protocol/results';
+import { allows } from '../url-policy';
 
 export async function handleDialog(ctx: ToolContext, args: HandleDialogArgs): Promise<ToolOutcome> {
   const tab = ctx.tab();
   const dialog = tab.dialog;
+  if (dialog && ctx.session.urlPolicy.roots !== undefined && !allows(ctx.session.urlPolicy, dialog.url ?? '')) {
+    throw new LayerError('URL_NOT_ALLOWED', 'A dialog outside platform scope must be handled by the user.');
+  }
   // An intercepted file chooser is dismissed here, or answered with `upload`.
   if (!dialog && tab.fileChooser) {
     if (args.accept) {

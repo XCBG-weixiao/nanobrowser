@@ -131,6 +131,7 @@ export function toolsForRun(options: {
 
 /** The kind of a call, for the execution policy. `tabs select` is ordered as a mutation. */
 export function kindOf(tool: string, args: Record<string, unknown>): ToolKind {
+  if (tool === 'get_whitelist_watch_status') return 'read';
   if (tool === 'done' || tool === 'ask_user') return 'control';
   if (tool === 'wait') return 'wait';
   if (tool === 'save_file') return 'state';

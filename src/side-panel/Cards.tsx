@@ -231,14 +231,16 @@ function InputCard({ prompt, answer }: { prompt: OpenPrompt; answer: (a: unknown
 
 function ConfirmCard({ prompt, answer }: { prompt: OpenPrompt; answer: (a: unknown) => void }) {
   return (
-    <Frame title={t('card.confirm.moveTab')} tone="agent">
+    <Frame
+      title={prompt.data.purpose === 'whitelist-watch' ? '白名单自动审批授权' : t('card.confirm.moveTab')}
+      tone="agent">
       <Line muted>{plain(prompt.data.title)}</Line>
       <Buttons>
         <button type="button" className={primary} onClick={() => answer('yes')}>
-          {t('card.yes')}
+          {prompt.data.purpose === 'whitelist-watch' ? '启用自动审批' : t('card.yes')}
         </button>
         <button type="button" className={secondary} onClick={() => answer('no')}>
-          {t('card.no')}
+          {prompt.data.purpose === 'whitelist-watch' ? '取消' : t('card.no')}
         </button>
       </Buttons>
     </Frame>

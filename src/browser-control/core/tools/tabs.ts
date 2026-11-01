@@ -5,6 +5,7 @@ import type { TabInfo, TabsData } from '../../protocol/results';
 import type { ToolContext, ToolOutcome } from '../controller';
 import { closeTab, openTab } from './navigate';
 import { quote } from '../text';
+import { allows } from '../url-policy';
 
 export async function sessionTabs(ctx: ToolContext): Promise<TabsData> {
   const tabs: TabInfo[] = [];
@@ -14,6 +15,7 @@ export async function sessionTabs(ctx: ToolContext): Promise<TabsData> {
       ctx.session.forgetTab(tabId);
       continue;
     }
+    if (!allows(ctx.session.urlPolicy, tab.url)) continue;
     tabs.push({ tabId, url: tab.url, title: tab.title, active: tabId === ctx.session.activeTabId });
   }
   return { tabs, activeTabId: ctx.session.activeTabId };

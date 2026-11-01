@@ -5,7 +5,7 @@ import type { FindMatch, ScreenshotData, SnapshotData } from '../../protocol/res
 import type { ToolContext, ToolOutcome } from '../controller';
 import { lookupRef } from '../refs';
 import type { RefRecord, Shown } from '../refs';
-import { captureTier1 } from '../perception/capture';
+import { captureTier1, frameAllowed } from '../perception/capture';
 import { buildObservation } from '../perception/observe';
 import type { Observation } from '../perception/observe';
 import type { ONode } from '../perception/outline';
@@ -37,7 +37,13 @@ export async function observeTab(
 ): Promise<Observation> {
   const attachment = await ctx.attach();
   const tab = ctx.tab();
-  const capture = await captureTier1(tab.tabId, attachment.cdp, attachment.topology, tab.capture);
+  const capture = await captureTier1(
+    tab.tabId,
+    attachment.cdp,
+    attachment.topology,
+    tab.capture,
+    ctx.session.urlPolicy,
+  );
   ctx.controller.registry.reconcile(tab.tabId, capture.frames);
   if (capture.frames[0]?.status !== 'captured') {
     ctx.session.known.replace(tab.tabId, []);
@@ -225,6 +231,12 @@ export async function screenshot(ctx: ToolContext, args: ScreenshotArgs): Promis
   const tab = ctx.tab();
   const { cdp } = attachment;
   const frames = await attachment.topology.frames();
+  if (frames.some(f => !frameAllowed(f, frames, ctx.session.urlPolicy))) {
+    throw new LayerError(
+      'URL_NOT_ALLOWED',
+      'Screenshots are unavailable while the page contains a frame outside platform scope.',
+    );
+  }
   const scroll = await scrollOffset(cdp, undefined);
   let clip: { x: number; y: number; width: number; height: number } | undefined;
   let origin = { x: scroll.x, y: scroll.y };

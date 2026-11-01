@@ -10,9 +10,9 @@ Nanobrowser is licensed under the Apache License 2.0. All source code is public 
 
 ## What stays in your browser
 
-- Nanobrowser runs entirely in your browser. There is no Nanobrowser server, and no account.
+- The browser agent runs in your browser. This fork optionally connects to your configured company backend for whitelist automation; Nanobrowser itself does not host an account service.
 - Your conversations, attachments, saved shortcuts, custom instructions, site settings and other settings are stored locally in your browser.
-- Your logins and cookies never leave your browser through Nanobrowser.
+- Browser cookies are not transferred. The optional company-platform sign-in sends the credentials you enter only to your configured platform backend, as described below.
 - The values of password, payment-card and one-time-code fields are hidden from the AI model.
 
 ## What is sent to the Nanobrowser team
@@ -40,6 +40,22 @@ How these providers handle your data is governed by their own privacy policies. 
 - You provide your own API keys.
 - Keys are stored locally in your browser, and are sent only to their own provider.
 - Keys are never included in exports and never written to logs.
+
+## Company platform automation in this fork
+
+Your administrator username and password are sent directly to the platform backend you configure. The password is
+not saved by the extension. The session token stays in `chrome.storage.local`, is sent only to that backend, is never
+passed to the model, and is not exported. Business requests do not follow redirects.
+
+The backend keeps application records, the authorized watcher, review audit and pending notifications in its SQLite
+database. The server task continues when Chrome is closed. The extension fetches pending notifications and
+acknowledges them after creating desktop notifications; this does not mean you have read them. Use Pause before
+disconnecting. Delete everything first pauses a connected server task, then removes the connection data.
+
+The agent only reads and operates within the configured HTTP(S) origin and path subtree. Unconfigured page scope
+denies access. Outside frames are excluded; mixed-scope screenshots, keyboard input and wheel scrolling are refused.
+Fixed whitelist polling and approval never call a model. For an isolated network, configure an internal model
+endpoint and build without analytics destinations. No external messaging or push provider is added.
 
 ## Updating from an earlier version
 

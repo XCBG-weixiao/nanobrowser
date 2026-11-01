@@ -1,0 +1,1335 @@
+--- a/packages/dbgpt-app/src/dbgpt_app/openapi/api_v1/agentic_data_api.py
++++ b/packages/dbgpt-app/src/dbgpt_app/openapi/api_v1/agentic_data_api.py
+@@ -90,6 +90,9 @@
+     get_resource_access_context,
+ )
+ 
++from .expert_whitelist_store import ExpertWhitelistStore, ReviewConflict
++
++
+ router = APIRouter()
+ CFG = Config()
+ logger = logging.getLogger(__name__)
+@@ -188,6 +191,13 @@
+ 
+ class ExpertModeApplicationReviewRequest(_BaseModel):
+     action: str
++    expected_version: Optional[int] = None
++    application_id: Optional[str] = None
++    idempotency_key: Optional[str] = None
++
++
++class ExpertModeWatchRequest(_BaseModel):
++    enabled: bool
+ 
+ 
+ class _ReactAgentTaskHandle:
+@@ -348,46 +358,31 @@
+     return datetime.now().astimezone().date().isoformat()
+ 
+ 
++def expert_mode_store() -> ExpertWhitelistStore:
++    return ExpertWhitelistStore(
++        EXPERT_MODE_APPLICATIONS_FILE.with_name("expert_mode.sqlite3"),
++        EXPERT_MODE_APPLICATIONS_FILE,
++        EXPERT_MODE_WHITELIST_FILE,
++    )
++
++
+ def load_expert_mode_whitelist() -> List[str]:
+-    with _EXPERT_MODE_LOCK:
+-        raw_items = _read_expert_mode_json_array(EXPERT_MODE_WHITELIST_FILE)
+-        employee_ids: List[str] = []
+-        seen: Set[str] = set()
+-        for item in raw_items:
+-            if not isinstance(item, str):
+-                raise ValueError("expert mode whitelist must contain employee id strings")
+-            employee_id = _normalize_employee_id(item)
+-            if employee_id and employee_id not in seen:
+-                employee_ids.append(employee_id)
+-                seen.add(employee_id)
+-        return employee_ids
++    return expert_mode_store().users()
+ 
+ 
+ def save_expert_mode_whitelist(employee_ids: List[str]) -> List[str]:
+-    normalized: List[str] = []
+-    seen: Set[str] = set()
+-    for item in employee_ids:
+-        employee_id = _normalize_employee_id(item)
+-        if employee_id and employee_id not in seen:
+-            normalized.append(employee_id)
+-            seen.add(employee_id)
+-    with _EXPERT_MODE_LOCK:
+-        _write_expert_mode_json_array(EXPERT_MODE_WHITELIST_FILE, normalized)
+-    return normalized
++    normalized = list(dict.fromkeys(
++        value for item in employee_ids if (value := _normalize_employee_id(item))
++    ))
++    return expert_mode_store().replace_users(normalized)
+ 
+ 
+ def add_expert_mode_whitelist_user(employee_id: str) -> List[str]:
+-    employee_id = _require_text(employee_id, "employee_id")
+-    whitelist = load_expert_mode_whitelist()
+-    if employee_id not in whitelist:
+-        whitelist.append(employee_id)
+-    return save_expert_mode_whitelist(whitelist)
++    return expert_mode_store().add_user(_require_text(employee_id, "employee_id"))
+ 
+ 
+ def delete_expert_mode_whitelist_user(employee_id: str) -> List[str]:
+-    employee_id = _require_text(employee_id, "employee_id")
+-    whitelist = [item for item in load_expert_mode_whitelist() if item != employee_id]
+-    return save_expert_mode_whitelist(whitelist)
++    return expert_mode_store().remove_user(_require_text(employee_id, "employee_id"))
+ 
+ 
+ def load_expert_mode_usage() -> Dict[str, Dict[str, Any]]:
+@@ -471,134 +466,30 @@
+ 
+ 
+ def load_expert_mode_applications() -> List[Dict[str, Any]]:
+-    with _EXPERT_MODE_LOCK:
+-        raw_items = _read_expert_mode_json_array(EXPERT_MODE_APPLICATIONS_FILE)
+-        for item in raw_items:
+-            if not isinstance(item, dict):
+-                raise ValueError("expert mode applications must contain objects")
+-        return list(raw_items)
++    return expert_mode_store().applications()
+ 
+ 
+ def append_expert_mode_application(record: Dict[str, Any]) -> Dict[str, Any]:
+-    with _EXPERT_MODE_LOCK:
+-        applications = load_expert_mode_applications()
+-        applications.append(record)
+-        _write_expert_mode_json_array(EXPERT_MODE_APPLICATIONS_FILE, applications)
+-        EXPERT_MODE_APPLICATIONS_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+-        with EXPERT_MODE_APPLICATIONS_LOG_FILE.open("a", encoding="utf-8") as f:
+-            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+-    return record
+-
+-
+-def _append_expert_mode_application_log(record: Dict[str, Any]) -> None:
+-    EXPERT_MODE_APPLICATIONS_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+-    with EXPERT_MODE_APPLICATIONS_LOG_FILE.open("a", encoding="utf-8") as f:
+-        f.write(json.dumps(record, ensure_ascii=False) + "\n")
+-
+-
+-def _resolve_application_status(
+-    application: Dict[str, Any], whitelist: Set[str]
+-) -> str:
+-    employee_id = _normalize_employee_id(application.get("employee_id"))
+-    if employee_id in whitelist:
+-        return EXPERT_MODE_APPLICATION_APPROVED
+-    status = str(application.get("status") or EXPERT_MODE_APPLICATION_PENDING).strip()
+-    if status == EXPERT_MODE_APPLICATION_REJECTED:
+-        return EXPERT_MODE_APPLICATION_REJECTED
+-    return EXPERT_MODE_APPLICATION_PENDING
+-
+-
+-def _application_response_item(
+-    application: Dict[str, Any],
+-    application_index: int,
+-    whitelist: Set[str],
+-) -> Dict[str, Any]:
+-    item = dict(application)
+-    item["application_index"] = application_index
+-    item["status"] = _resolve_application_status(item, whitelist)
+-    return item
+-
+-
+-def _latest_application_response_items(
+-    applications: List[Dict[str, Any]],
+-    whitelist: Set[str],
+-) -> List[Dict[str, Any]]:
+-    latest_by_employee: Dict[str, Dict[str, Any]] = {}
+-    for index, application in enumerate(applications):
+-        employee_id = _normalize_employee_id(application.get("employee_id"))
+-        if not employee_id:
+-            continue
+-        latest_by_employee[employee_id] = _application_response_item(
+-            application,
+-            index,
+-            whitelist,
+-        )
+-    return sorted(
+-        latest_by_employee.values(),
+-        key=lambda item: str(item.get("created_at") or ""),
+-        reverse=True,
+-    )
++    return expert_mode_store().append(record)
+ 
+ 
+ def expert_mode_applications_payload() -> Dict[str, Any]:
+-    applications = load_expert_mode_applications()
+-    whitelist = set(load_expert_mode_whitelist())
+-    response_items = _latest_application_response_items(applications, whitelist)
+-    pending_count = sum(
+-        1 for item in response_items if item["status"] == EXPERT_MODE_APPLICATION_PENDING
+-    )
+-    return {
+-        "applications": response_items,
+-        "pending_count": pending_count,
+-    }
++    return expert_mode_store().payload()
+ 
+ 
+ def review_expert_mode_application_by_index(
+     application_index: int,
+     action: str,
+     reviewer: UserRequest,
++    expected_version: Optional[int] = None,
++    application_id: Optional[str] = None,
++    idempotency_key: Optional[str] = None,
+ ) -> Dict[str, Any]:
+-    action = str(action or "").strip().lower()
+-    if action not in {"approve", "reject"}:
+-        raise ValueError("action must be approve or reject")
+-
+-    with _EXPERT_MODE_LOCK:
+-        applications = load_expert_mode_applications()
+-        if application_index < 0 or application_index >= len(applications):
+-            raise IndexError("application not found")
+-
+-        application = dict(applications[application_index])
+-        employee_id = _require_text(application.get("employee_id"), "employee_id")
+-        status = (
+-            EXPERT_MODE_APPLICATION_APPROVED
+-            if action == "approve"
+-            else EXPERT_MODE_APPLICATION_REJECTED
+-        )
+-        application.update(
+-            {
+-                "status": status,
+-                "reviewed_by": getattr(reviewer, "user_id", None),
+-                "reviewed_at": datetime.now(timezone.utc).isoformat(),
+-            }
+-        )
+-        applications[application_index] = application
+-        _write_expert_mode_json_array(EXPERT_MODE_APPLICATIONS_FILE, applications)
+-        if status == EXPERT_MODE_APPLICATION_APPROVED:
+-            add_expert_mode_whitelist_user(employee_id)
+-        _append_expert_mode_application_log(
+-            {
+-                "event": "review",
+-                "application_index": application_index,
+-                "action": action,
+-                "employee_id": employee_id,
+-                "reviewed_by": getattr(reviewer, "user_id", None),
+-                "reviewed_at": application["reviewed_at"],
+-            }
+-        )
+-    return {
+-        **expert_mode_applications_payload(),
+-        "users": load_expert_mode_whitelist(),
+-    }
++    return expert_mode_store().review(
++        seq=application_index, action=action,
++        actor=_require_text(getattr(reviewer, "user_id", None), "reviewer"),
++        expected_version=expected_version, application_id=application_id, key=idempotency_key,
++    )
+ 
+ 
+ def is_admin_user(user_token: Optional[UserRequest]) -> bool:
+@@ -1199,7 +1090,7 @@
+             "status": EXPERT_MODE_APPLICATION_PENDING,
+             "created_at": datetime.now(timezone.utc).isoformat(),
+         }
+-        append_expert_mode_application(record)
++        record = append_expert_mode_application(record)
+         logger.info(
+             "Expert mode application submitted: employee_id=%s user_id=%s department=%s",
+             employee_id,
+@@ -1241,8 +1132,13 @@
+                 application_index,
+                 request.action,
+                 user_token,
+-            )
+-        )
++                expected_version=request.expected_version,
++                application_id=request.application_id,
++                idempotency_key=request.idempotency_key,
++            )
++        )
++    except ReviewConflict as e:
++        return Result.failed(code="E4090", msg=str(e))
+     except IndexError as e:
+         return Result.failed(code="E4040", msg=str(e))
+     except ValueError as e:
+@@ -1250,6 +1146,50 @@
+     except Exception as e:
+         logger.exception("Failed to review expert mode application")
+         return Result.failed(code="E5007", msg=str(e))
++
++
++@router.get("/v1/expert-mode/watch", response_model=Result)
++async def get_expert_mode_watch(user_token: UserRequest = Depends(get_user_from_headers)):
++    if not is_admin_user(user_token):
++        return Result.failed(code="E4030", msg="Admin permission required")
++    from .expert_whitelist_runtime import whitelist_watch_service
++
++    return Result.succ({**expert_mode_store().watch(), "runtime_error": whitelist_watch_service.last_error})
++
++
++@router.post("/v1/expert-mode/watch", response_model=Result)
++async def set_expert_mode_watch(
++    request: ExpertModeWatchRequest,
++    user_token: UserRequest = Depends(get_user_from_headers),
++):
++    if not is_admin_user(user_token):
++        return Result.failed(code="E4030", msg="Admin permission required")
++    from .expert_whitelist_runtime import whitelist_watch_service
++
++    result = expert_mode_store().set_watch(request.enabled, user_token.user_id)
++    whitelist_watch_service.wake.set()
++    return Result.succ(result)
++
++
++@router.get("/v1/expert-mode/notifications", response_model=Result)
++async def get_expert_mode_notifications(user_token: UserRequest = Depends(get_user_from_headers)):
++    if not is_admin_user(user_token):
++        return Result.failed(code="E4030", msg="Admin permission required")
++    return Result.succ({"notifications": expert_mode_store().pending_notifications(user_token.user_id)})
++
++
++@router.post("/v1/expert-mode/notifications/{notification_id}/ack", response_model=Result)
++async def acknowledge_expert_mode_notification(
++    notification_id: str,
++    user_token: UserRequest = Depends(get_user_from_headers),
++):
++    if not is_admin_user(user_token):
++        return Result.failed(code="E4030", msg="Admin permission required")
++    try:
++        expert_mode_store().acknowledge(user_token.user_id, notification_id)
++    except IndexError as e:
++        return Result.failed(code="E4040", msg=str(e))
++    return Result.succ(True)
+ 
+ 
+ @router.get("/v1/expert-mode/whitelist", response_model=Result)
+--- a/packages/dbgpt-app/src/dbgpt_app/dbgpt_server.py
++++ b/packages/dbgpt-app/src/dbgpt_app/dbgpt_server.py
+@@ -82,6 +82,11 @@
+     app.include_router(python_upload_router, prefix="/api", tags=["PythonUpload"])
+     app.include_router(examples_router, prefix="/api", tags=["Examples"])
+     app.include_router(agentic_data_api, prefix="/api", tags=["AgenticData"])
++    from dbgpt_app.openapi.api_v1.expert_whitelist_runtime import (
++        register_whitelist_watch,
++    )
++
++    register_whitelist_watch(app)
+ 
+     app.include_router(knowledge_router, tags=["Knowledge"])
+ 
+--- a/packages/dbgpt-serve/src/dbgpt_serve/utils/user_auth.py
++++ b/packages/dbgpt-serve/src/dbgpt_serve/utils/user_auth.py
+@@ -132,6 +132,13 @@
+ 
+ 
+ class UserAuthStore:
++    def get_user(self, username: str) -> Optional[UserRequest]:
++        """Revalidate a persisted task's authorizer without keeping their login token."""
++        with _LOCK:
++            data = _load_storage()
++            user = data["users"].get(username)
++            return _build_user_request(username, user) if user else None
++
+     def register_user(self, username: str, password: str) -> UserRequest:
+         with _LOCK:
+             data = _load_storage()
+--- a/web/pages/construct/expert-whitelist/index.tsx
++++ b/web/pages/construct/expert-whitelist/index.tsx
+@@ -12,6 +12,8 @@
+ 
+ type ApplicationRow = {
+   application_index: number;
++  application_id: string;
++  version: number;
+   employee_id: string;
+   department: string;
+   usage_scenarios: string[];
+@@ -19,7 +21,13 @@
+   other?: string;
+   user_id?: string;
+   created_at?: string;
+-  status?: 'pending' | 'approved' | 'rejected';
++  status?: 'pending' | 'approved' | 'rejected' | 'revoked';
++};
++
++type ExpertModeApiResult = {
++  success: boolean;
++  data?: { users?: string[]; applications?: ApplicationRow[] };
++  err_msg?: string;
+ };
+ 
+ function formatApplicationTime(value?: string) {
+@@ -32,6 +40,8 @@
+ function resolveApplicationStatus(record: ApplicationRow, whitelistSet: Set<string>) {
+   if (whitelistSet.has(record.employee_id)) return 'approved';
+   if (record.status === 'rejected') return 'rejected';
++  if (record.status === 'revoked') return 'revoked';
++  if (record.status === 'approved') return 'approved';
+   return 'pending';
+ }
+ 
+@@ -60,7 +70,7 @@
+     if (!isAdmin) return;
+     setLoading(true);
+     try {
+-      const response = await axios.get(buildApiUrl('/api/v1/expert-mode/whitelist'));
++      const response = await axios.get<unknown, ExpertModeApiResult>(buildApiUrl('/api/v1/expert-mode/whitelist'));
+       if (response?.success) {
+         applyUsers(response.data?.users || []);
+         return;
+@@ -78,7 +88,7 @@
+     if (!isAdmin) return;
+     setApplicationLoading(true);
+     try {
+-      const response = await axios.get(buildApiUrl('/api/v1/expert-mode/applications'));
++      const response = await axios.get<unknown, ExpertModeApiResult>(buildApiUrl('/api/v1/expert-mode/applications'));
+       if (response?.success) {
+         setApplications(response.data?.applications || []);
+         return;
+@@ -95,7 +105,7 @@
+   const handleAdd = async (values: { employee_id: string }) => {
+     setSubmitting(true);
+     try {
+-      const response = await axios.post(buildApiUrl('/api/v1/expert-mode/whitelist'), {
++      const response = await axios.post<unknown, ExpertModeApiResult>(buildApiUrl('/api/v1/expert-mode/whitelist'), {
+         employee_id: values.employee_id,
+       });
+       if (response?.success) {
+@@ -115,7 +125,7 @@
+ 
+   const handleDelete = async (employeeId: string) => {
+     try {
+-      const response = await axios.delete(
++      const response = await axios.delete<unknown, ExpertModeApiResult>(
+         buildApiUrl(`/api/v1/expert-mode/whitelist/${encodeURIComponent(employeeId)}`),
+       );
+       if (response?.success) {
+@@ -133,9 +143,9 @@
+   const handleReview = async (record: ApplicationRow, action: 'approve' | 'reject') => {
+     setReviewingIndex(record.application_index);
+     try {
+-      const response = await axios.post(
++      const response = await axios.post<unknown, ExpertModeApiResult>(
+         buildApiUrl(`/api/v1/expert-mode/applications/${record.application_index}/review`),
+-        { action },
++        { action, application_id: record.application_id, expected_version: record.version },
+       );
+       if (response?.success) {
+         applyUsers(response.data?.users || []);
+@@ -250,6 +260,7 @@
+                     render: (_, record) => {
+                       const status = resolveApplicationStatus(record, whitelistSet);
+                       if (status === 'approved') return <Tag color='green'>已开通</Tag>;
++                      if (status === 'revoked') return <Tag>已撤销</Tag>;
+                       if (status === 'rejected') return <Tag color='red'>已拒绝</Tag>;
+                       return <Tag color='blue'>待处理</Tag>;
+                     },
+--- a/packages/dbgpt-app/src/dbgpt_app/tests/test_expert_mode_access.py
++++ b/packages/dbgpt-app/src/dbgpt_app/tests/test_expert_mode_access.py
+@@ -164,9 +164,9 @@
+     assert applications[0]["usage_scenarios"] == ["数据清洗与整理", "自动生成分析报告"]
+     assert applications[0]["data_size"] == "10MB～100MB"
+     assert applications[0]["other"] == "快速模式无法调用指定业务工具"
+-    assert (expert_mode_files / "expert_mode_applications.log").read_text(
+-        encoding="utf-8"
+-    ).count('"employee_id": "1001"') == 1
++    assert applications[0]["application_id"]
++    assert applications[0]["version"] == 1
++    assert agentic_data_api.expert_mode_store().applications() == applications
+ 
+ 
+ @pytest.mark.asyncio
+@@ -378,3 +378,17 @@
+     assert "审批" in whitelist_page_source
+     assert "同意" in whitelist_page_source
+     assert "拒绝" in whitelist_page_source
++
++
++@pytest.mark.asyncio
++async def test_watch_and_notifications_require_admin(expert_mode_files):
++    normal = UserRequest(user_id="1001", role="normal")
++    for result in [
++        await agentic_data_api.get_expert_mode_watch(user_token=normal),
++        await agentic_data_api.set_expert_mode_watch(agentic_data_api.ExpertModeWatchRequest(enabled=True), user_token=normal),
++        await agentic_data_api.get_expert_mode_notifications(user_token=normal),
++        await agentic_data_api.acknowledge_expert_mode_notification("unknown", user_token=normal),
++    ]:
++        assert not result.success
++        assert result.err_code == "E4030"
++    assert not agentic_data_api.expert_mode_store().watch()["enabled"]
+--- a/change.md
++++ b/change.md
+@@ -1,3 +1,12 @@
++## 功能添加：白名单自动审批与浏览器通知（2026-11-02）
++
++- 申请、白名单、审批审计、持久化任务和通知发件箱迁入同一 SQLite 业务库；首次导入旧 JSON，旧文件保留。
++- 申请增加稳定 ID 与版本，审批改为检查待处理状态与版本，不覆盖人工拒绝；移除白名单保留已撤销状态。
++- 增加每 30 秒运行的单任务审批服务，处理全部已有和新增待审批申请，重启恢复，每轮复核启用者管理员身份。
++- 新增管理员任务查询、启停、通知拉取和确认接口，沿用有效会话鉴权；固定流程不调用模型。
++- 白名单前端携带申请 ID 和版本，显示已撤销状态。通知失败不重新审批。
++- 验证：业务存储、API 鉴权、并发、事务回滚、通知、启停和重启恢复相关测试；最终结果见交付验证记录。
++
+ ## 功能添加：上传数据 SQL 模式
+ 
+ - 新增 `structured_sql` 分析模式，前端展示为 `SQL`，普通用户可用。
+--- /dev/null
++++ b/packages/dbgpt-app/src/dbgpt_app/openapi/api_v1/expert_whitelist_store.py
+@@ -0,0 +1,436 @@
++"""Transactional whitelist approvals and notification outbox."""
++
++import json
++import sqlite3
++from contextlib import contextmanager
++from datetime import datetime, timezone
++from pathlib import Path
++from typing import Any, Callable, Dict, List, Optional
++from uuid import uuid4
++
++
++class ReviewConflict(ValueError):
++    """The application changed before the requested review could commit."""
++
++
++def utcnow() -> str:
++    return datetime.now(timezone.utc).isoformat()
++
++
++class ExpertWhitelistStore:
++    def __init__(self, path: Path, applications: Path, whitelist: Path):
++        self.path = path
++        self.path.parent.mkdir(parents=True, exist_ok=True)
++        with self.transaction() as db:
++            db.executescript(
++                """
++                CREATE TABLE IF NOT EXISTS whitelist_meta (
++                    key TEXT PRIMARY KEY, value TEXT NOT NULL
++                );
++                CREATE TABLE IF NOT EXISTS whitelist_users (
++                    employee_id TEXT PRIMARY KEY
++                );
++                CREATE TABLE IF NOT EXISTS whitelist_applications (
++                    seq INTEGER PRIMARY KEY,
++                    id TEXT NOT NULL UNIQUE,
++                    employee_id TEXT NOT NULL,
++                    payload TEXT NOT NULL,
++                    status TEXT NOT NULL,
++                    version INTEGER NOT NULL DEFAULT 1,
++                    reviewed_by TEXT,
++                    reviewed_at TEXT
++                );
++                CREATE TABLE IF NOT EXISTS whitelist_reviews (
++                    key TEXT PRIMARY KEY,
++                    application_id TEXT NOT NULL,
++                    action TEXT NOT NULL,
++                    actor TEXT NOT NULL,
++                    version INTEGER NOT NULL,
++                    at TEXT NOT NULL
++                );
++                CREATE TABLE IF NOT EXISTS whitelist_watch (
++                    id INTEGER PRIMARY KEY CHECK(id=1),
++                    enabled INTEGER NOT NULL DEFAULT 0,
++                    owner TEXT,
++                    next_run REAL NOT NULL DEFAULT 0,
++                    checked_at TEXT,
++                    error TEXT,
++                    updated_at TEXT NOT NULL
++                );
++                CREATE TABLE IF NOT EXISTS whitelist_notifications (
++                    id TEXT PRIMARY KEY,
++                    owner TEXT NOT NULL,
++                    application_id TEXT,
++                    employee_id TEXT,
++                    kind TEXT NOT NULL,
++                    message TEXT NOT NULL,
++                    at TEXT NOT NULL,
++                    acknowledged_at TEXT
++                );
++                CREATE INDEX IF NOT EXISTS whitelist_pending
++                    ON whitelist_applications(status, seq);
++                CREATE INDEX IF NOT EXISTS whitelist_outbox
++                    ON whitelist_notifications(owner, acknowledged_at, at);
++                """
++            )
++        # Import once, in one transaction. The old files remain available for an
++        # operator's backup.
++        with self.transaction() as db:
++            if db.execute(
++                "SELECT 1 FROM whitelist_meta WHERE key='imported'"
++            ).fetchone():
++                return
++            users = self._legacy(whitelist)
++            if any(not isinstance(user, str) or not user.strip() for user in users):
++                raise ValueError("legacy whitelist must contain nonempty employee ids")
++            users = {user.strip() for user in users}
++            db.executemany(
++                "INSERT INTO whitelist_users VALUES (?)", [(u,) for u in sorted(users)]
++            )
++            for seq, item in enumerate(self._legacy(applications)):
++                if (
++                    not isinstance(item, dict)
++                    or not str(item.get("employee_id") or "").strip()
++                ):
++                    raise ValueError("legacy applications must contain employee ids")
++                employee = str(item["employee_id"]).strip()
++                status = item.get("status", "pending")
++                if status not in {"pending", "approved", "rejected", "revoked"}:
++                    raise ValueError("invalid legacy application status")
++                if employee in users:
++                    status = "approved"
++                elif status == "approved":
++                    status = "revoked"
++                db.execute(
++                    "INSERT INTO whitelist_applications(seq,id,employee_id,payload,st"
++                    "atus,reviewed_by,reviewed_at) "
++                    "VALUES (?,?,?,?,?,?,?)",
++                    (
++                        seq,
++                        str(uuid4()),
++                        employee,
++                        json.dumps(item, ensure_ascii=False),
++                        status,
++                        item.get("reviewed_by"),
++                        item.get("reviewed_at"),
++                    ),
++                )
++            db.execute(
++                "INSERT INTO whitelist_watch(id,updated_at) VALUES (1,?)", (utcnow(),)
++            )
++            db.execute("INSERT INTO whitelist_meta VALUES ('imported',?)", (utcnow(),))
++
++    @staticmethod
++    def _legacy(path: Path) -> List[Any]:
++        if not path.exists():
++            return []
++        result = json.loads(path.read_text(encoding="utf-8"))
++        if not isinstance(result, list):
++            raise ValueError(f"{path.name} must be a JSON array")
++        return result
++
++    @contextmanager
++    def transaction(self):
++        db = sqlite3.connect(str(self.path), timeout=10, isolation_level=None)
++        db.row_factory = sqlite3.Row
++        try:
++            db.execute("PRAGMA foreign_keys=ON")
++            db.execute("BEGIN IMMEDIATE")
++            yield db
++            db.commit()
++        except BaseException:
++            db.rollback()
++            raise
++        finally:
++            db.close()
++
++    @staticmethod
++    def _item(row: sqlite3.Row) -> Dict[str, Any]:
++        return {
++            **json.loads(row["payload"]),
++            "application_index": row["seq"],
++            "application_id": row["id"],
++            "version": row["version"],
++            "status": row["status"],
++            "reviewed_by": row["reviewed_by"],
++            "reviewed_at": row["reviewed_at"],
++        }
++
++    def users(self) -> List[str]:
++        with self.transaction() as db:
++            return [
++                row[0]
++                for row in db.execute(
++                    "SELECT employee_id FROM whitelist_users ORDER BY employee_id"
++                )
++            ]
++
++    @staticmethod
++    def _add_user(db: sqlite3.Connection, employee: str) -> None:
++        db.execute("INSERT OR IGNORE INTO whitelist_users VALUES (?)", (employee,))
++
++    @staticmethod
++    def _remove_user(db: sqlite3.Connection, employee: str) -> None:
++        db.execute("DELETE FROM whitelist_users WHERE employee_id=?", (employee,))
++        db.execute(
++            "UPDATE whitelist_applications SET status='revoked',version=version+1 "
++            "WHERE employee_id=? AND status IN ('approved','pending')",
++            (employee,),
++        )
++
++    def replace_users(self, users: List[str]) -> List[str]:
++        with self.transaction() as db:
++            old = {
++                row[0] for row in db.execute("SELECT employee_id FROM whitelist_users")
++            }
++            for employee in old - set(users):
++                self._remove_user(db, employee)
++            for employee in set(users) - old:
++                self._add_user(db, employee)
++                db.execute(
++                    "UPDATE whitelist_applications SET status='approved',version=vers"
++                    "ion+1 "
++                    "WHERE employee_id=? AND status='pending'",
++                    (employee,),
++                )
++        return self.users()
++
++    def add_user(self, employee: str) -> List[str]:
++        with self.transaction() as db:
++            self._add_user(db, employee)
++            db.execute(
++                "UPDATE whitelist_applications SET status='approved',version=version+1 "
++                "WHERE employee_id=? AND status='pending'",
++                (employee,),
++            )
++        return self.users()
++
++    def remove_user(self, employee: str) -> List[str]:
++        with self.transaction() as db:
++            self._remove_user(db, employee)
++        return self.users()
++
++    def append(self, record: Dict[str, Any]) -> Dict[str, Any]:
++        with self.transaction() as db:
++            seq = db.execute(
++                "SELECT COALESCE(MAX(seq),-1)+1 FROM whitelist_applications"
++            ).fetchone()[0]
++            db.execute(
++                "INSERT INTO whitelist_applications(seq,id,employee_id,payload,st"
++                "atus) VALUES (?,?,?,?,'pending')",
++                (
++                    seq,
++                    str(uuid4()),
++                    record["employee_id"],
++                    json.dumps(record, ensure_ascii=False),
++                ),
++            )
++            return self._item(
++                db.execute(
++                    "SELECT * FROM whitelist_applications WHERE seq=?", (seq,)
++                ).fetchone()
++            )
++
++    def applications(self, latest: bool = False) -> List[Dict[str, Any]]:
++        with self.transaction() as db:
++            query = "SELECT * FROM whitelist_applications"
++            if latest:
++                query += (
++                    " WHERE seq IN (SELECT MAX(seq) FROM whitelist_applications GROUP"
++                    " BY employee_id)"
++                )
++            return [
++                self._item(row)
++                for row in db.execute(
++                    query + " ORDER BY seq DESC" if latest else query + " ORDER BY seq"
++                )
++            ]
++
++    def payload(self) -> Dict[str, Any]:
++        applications = self.applications(latest=True)
++        return {
++            "applications": applications,
++            "pending_count": sum(a["status"] == "pending" for a in applications),
++        }
++
++    @staticmethod
++    def _review(
++        db: sqlite3.Connection,
++        row: sqlite3.Row,
++        action: str,
++        actor: str,
++        key: str,
++        expected_version: int,
++        notify: bool = False,
++    ) -> None:
++        prior = db.execute(
++            "SELECT * FROM whitelist_reviews WHERE key=?", (key,)
++        ).fetchone()
++        if prior:
++            if (prior["application_id"], prior["action"], prior["actor"]) != (
++                row["id"],
++                action,
++                actor,
++            ):
++                raise ReviewConflict("idempotency key belongs to a different review")
++            return
++        if row["status"] != "pending" or row["version"] != expected_version:
++            raise ReviewConflict(
++                "application is no longer pending at the expected version"
++            )
++        at = utcnow()
++        status = "approved" if action == "approve" else "rejected"
++        db.execute(
++            "UPDATE whitelist_applications SET status=?,version=version+1,rev"
++            "iewed_by=?,reviewed_at=? WHERE id=?",
++            (status, actor, at, row["id"]),
++        )
++        if action == "approve":
++            ExpertWhitelistStore._add_user(db, row["employee_id"])
++        db.execute(
++            "INSERT INTO whitelist_reviews VALUES (?,?,?,?,?,?)",
++            (key, row["id"], action, actor, expected_version, at),
++        )
++        if notify:
++            db.execute(
++                "INSERT INTO whitelist_notifications(id,owner,application_id,empl"
++                "oyee_id,kind,message,at) "
++                "VALUES (?,?,?,?,?,?,?)",
++                (
++                    key,
++                    actor,
++                    row["id"],
++                    row["employee_id"],
++                    "approved",
++                    f"工号 {row['employee_id']} 的白名单申请已自动通过。",
++                    at,
++                ),
++            )
++
++    def review(
++        self,
++        *,
++        actor: str,
++        action: str,
++        seq: Optional[int] = None,
++        application_id: Optional[str] = None,
++        expected_version: Optional[int] = None,
++        key: Optional[str] = None,
++    ) -> Dict[str, Any]:
++        if action not in {"approve", "reject"}:
++            raise ValueError("action must be approve or reject")
++        with self.transaction() as db:
++            row = db.execute(
++                "SELECT * FROM whitelist_applications WHERE "
++                + ("id=?" if application_id else "seq=?"),
++                (application_id if application_id else seq,),
++            ).fetchone()
++            if row is None:
++                raise IndexError("application not found")
++            if seq is not None and row["seq"] != seq:
++                raise ReviewConflict("application id does not match its index")
++            self._review(
++                db,
++                row,
++                action,
++                actor,
++                key or str(uuid4()),
++                expected_version if expected_version is not None else row["version"],
++            )
++        return {**self.payload(), "users": self.users()}
++
++    def watch(self) -> Dict[str, Any]:
++        with self.transaction() as db:
++            result = dict(
++                db.execute("SELECT * FROM whitelist_watch WHERE id=1").fetchone()
++            )
++            result["enabled"] = bool(result["enabled"])
++            result["pending_count"] = db.execute(
++                "SELECT COUNT(*) FROM whitelist_applications WHERE status='pending'"
++            ).fetchone()[0]
++            result["approved_count"] = db.execute(
++                "SELECT COUNT(*) FROM whitelist_reviews WHERE key LIKE 'auto:%'"
++            ).fetchone()[0]
++            result["recent"] = [
++                dict(r)
++                for r in db.execute(
++                    "SELECT * FROM whitelist_notifications ORDER BY at DESC LIMIT 20"
++                )
++            ]
++            return result
++
++    def set_watch(self, enabled: bool, owner: str) -> Dict[str, Any]:
++        with self.transaction() as db:
++            db.execute(
++                "UPDATE whitelist_watch SET enabled=?,owner=?,next_run=0,error=NU"
++                "LL,updated_at=? WHERE id=1",
++                (int(enabled), owner, utcnow()),
++            )
++        return self.watch()
++
++    def run_due(self, is_admin: Callable[[str], bool], now: float) -> int:
++        with self.transaction() as db:
++            watch = db.execute("SELECT * FROM whitelist_watch WHERE id=1").fetchone()
++            if not watch["enabled"] or watch["next_run"] > now:
++                return 0
++            at = utcnow()
++            if not is_admin(watch["owner"]):
++                message = "自动审批任务的管理员授权已失效，请重新登录并启用。"
++                db.execute(
++                    "UPDATE whitelist_watch SET enabled=0,error=?,checked_at=?,update"
++                    "d_at=? WHERE id=1",
++                    (message, at, at),
++                )
++                db.execute(
++                    "INSERT OR IGNORE INTO whitelist_notifications(id,owner,kind,mess"
++                    "age,at) VALUES (?,?, 'error',?,?)",
++                    (f"auth:{watch['updated_at']}", watch["owner"], message, at),
++                )
++                return 0
++            # The status check, grant, audit and outbox commit together. A competing
++            # manual review takes this same lock.
++            rows = db.execute(
++                "SELECT * FROM whitelist_applications WHERE status='pending' ORDE"
++                "R BY seq LIMIT 100"
++            ).fetchall()
++            for row in rows:
++                self._review(
++                    db,
++                    row,
++                    "approve",
++                    watch["owner"],
++                    f"auto:{row['id']}",
++                    row["version"],
++                    notify=True,
++                )
++            db.execute(
++                "UPDATE whitelist_watch SET next_run=?,checked_at=?,error=NULL WH"
++                "ERE id=1",
++                (now + 30, at),
++            )
++            return len(rows)
++
++    def pending_notifications(self, owner: str) -> List[Dict[str, Any]]:
++        with self.transaction() as db:
++            return [
++                dict(row)
++                for row in db.execute(
++                    "SELECT id,application_id,employee_id,kind,message,at FROM whitel"
++                    "ist_notifications "
++                    "WHERE owner=? AND acknowledged_at IS NULL ORDER BY at LIMIT 50",
++                    (owner,),
++                )
++            ]
++
++    def acknowledge(self, owner: str, notification_id: str) -> None:
++        with self.transaction() as db:
++            if not db.execute(
++                "SELECT 1 FROM whitelist_notifications WHERE id=? AND owner=?",
++                (notification_id, owner),
++            ).fetchone():
++                raise IndexError("notification not found")
++            db.execute(
++                "UPDATE whitelist_notifications SET acknowledged_at=COALESCE(ackn"
++                "owledged_at,?) WHERE id=? AND owner=?",
++                (utcnow(), notification_id, owner),
++            )
+--- /dev/null
++++ b/packages/dbgpt-app/src/dbgpt_app/openapi/api_v1/expert_whitelist_runtime.py
+@@ -0,0 +1,64 @@
++"""One bounded, model-free poller; SQLite serializes competing server processes."""
++
++import asyncio
++import logging
++import time
++from typing import Optional
++
++from dbgpt_serve.utils.user_auth import get_user_auth_store
++
++logger = logging.getLogger(__name__)
++
++
++def authorized_admin(owner: str) -> bool:
++    user = get_user_auth_store().get_user(owner)
++    return user is not None and user.role == "admin"
++
++
++class WhitelistWatchService:
++    def __init__(self):
++        self.task: Optional[asyncio.Task] = None
++        self.wake = asyncio.Event()
++        self.last_error: Optional[str] = None
++
++    async def start(self) -> None:
++        if self.task is None:
++            self.task = asyncio.create_task(self._run(), name="expert-whitelist-watch")
++
++    async def stop(self) -> None:
++        if self.task is not None:
++            self.task.cancel()
++            try:
++                await self.task
++            except asyncio.CancelledError:
++                pass
++            self.task = None
++
++    async def _run(self) -> None:
++        from .agentic_data_api import expert_mode_store
++
++        while True:
++            self.wake.clear()
++            try:
++                await asyncio.to_thread(
++                    lambda: expert_mode_store().run_due(authorized_admin, time.time())
++                )
++                self.last_error = None
++            except Exception:
++                self.last_error = "自动审批检查失败，请查看服务器日志。"
++                logger.exception("Expert whitelist watch failed")
++            try:
++                await asyncio.wait_for(self.wake.wait(), timeout=30)
++            except asyncio.TimeoutError:
++                pass
++
++
++whitelist_watch_service = WhitelistWatchService()
++
++
++def register_whitelist_watch(app) -> None:
++    """Use DB-GPT's lifecycle registry, including its custom FastAPI lifespan."""
++    from dbgpt.util.fastapi import register_event_handler
++
++    register_event_handler(app, "startup", whitelist_watch_service.start)
++    register_event_handler(app, "shutdown", whitelist_watch_service.stop)
+--- /dev/null
++++ b/packages/dbgpt-app/src/dbgpt_app/tests/test_expert_whitelist_store.py
+@@ -0,0 +1,192 @@
++import json
++from concurrent.futures import ThreadPoolExecutor
++
++import pytest
++
++from dbgpt_app.openapi.api_v1.expert_whitelist_store import (
++    ExpertWhitelistStore,
++    ReviewConflict,
++)
++
++
++@pytest.fixture
++def store(tmp_path):
++    return ExpertWhitelistStore(
++        tmp_path / "state.sqlite3",
++        tmp_path / "applications.json",
++        tmp_path / "users.json",
++    )
++
++
++def application(store, employee="1001"):
++    return store.append(
++        {
++            "employee_id": employee,
++            "department": "数据部",
++            "created_at": "2026-11-02T01:00:00Z",
++        }
++    )
++
++
++def test_import_is_once_and_preserves_revocation(tmp_path):
++    apps, users = tmp_path / "applications.json", tmp_path / "users.json"
++    original = [{"employee_id": "1001", "status": "approved"}, {"employee_id": "1002"}]
++    apps.write_text(json.dumps(original))
++    users.write_text('["1002"]')
++    first = ExpertWhitelistStore(tmp_path / "state.sqlite3", apps, users)
++    rows = first.applications()
++    assert [r["status"] for r in rows] == ["revoked", "approved"]
++    reopened = ExpertWhitelistStore(first.path, apps, users)
++    assert reopened.applications() == rows
++    assert json.loads(apps.read_text()) == original
++
++
++def test_existing_and_new_applications_are_processed_once_after_restart(store):
++    first = application(store)
++    store.set_watch(True, "admin")
++    assert store.run_due(lambda _: True, 100) == 1
++    assert store.run_due(lambda _: True, 101) == 0
++    second = application(store, "1002")
++    reopened = ExpertWhitelistStore(
++        store.path,
++        store.path.parent / "applications.json",
++        store.path.parent / "users.json",
++    )
++    assert reopened.run_due(lambda _: True, 130) == 1
++    assert reopened.users() == ["1001", "1002"]
++    notifications = reopened.pending_notifications("admin")
++    assert {n["application_id"] for n in notifications} == {
++        first["application_id"],
++        second["application_id"],
++    }
++    assert reopened.run_due(lambda _: True, 160) == 0
++    assert len(reopened.pending_notifications("admin")) == 2
++
++
++def test_all_submissions_are_processed_including_same_employee(store):
++    for _ in range(3):
++        application(store)
++    assert len(store.payload()["applications"]) == 1
++    store.set_watch(True, "admin")
++    assert store.run_due(lambda _: True, 0) == 3
++    assert len(store.pending_notifications("admin")) == 3
++
++
++def test_manual_rejection_and_revocation_are_not_overwritten(store):
++    rejected = application(store)
++    store.review(seq=0, action="reject", actor="admin")
++    approved = application(store, "1002")
++    store.review(seq=1, action="approve", actor="admin")
++    store.remove_user("1002")
++    with pytest.raises(ReviewConflict):
++        store.review(
++            seq=0,
++            application_id=rejected["application_id"],
++            expected_version=1,
++            action="approve",
++            actor="admin",
++        )
++    with pytest.raises(ReviewConflict):
++        store.review(
++            seq=1,
++            application_id=approved["application_id"],
++            expected_version=1,
++            action="approve",
++            actor="admin",
++        )
++    store.set_watch(True, "admin")
++    assert store.run_due(lambda _: True, 0) == 0
++    assert store.users() == []
++
++
++def test_review_idempotency_does_not_grant_again_after_revocation(store):
++    item = application(store)
++    args = dict(
++        application_id=item["application_id"],
++        expected_version=1,
++        action="approve",
++        actor="admin",
++        key="operation-1",
++    )
++    store.review(**args)
++    store.remove_user("1001")
++    store.review(**args)
++    assert store.users() == []
++    assert store.applications()[0]["status"] == "revoked"
++    with pytest.raises(ReviewConflict):
++        store.review(**{**args, "action": "reject"})
++
++
++def test_outbox_failure_rolls_back_grant_review_and_task_state(store):
++    application(store)
++    store.set_watch(True, "admin")
++    with store.transaction() as db:
++        db.execute(
++            "CREATE TRIGGER fail_outbox BEFORE INSERT ON whitelist_notificati"
++            "ons BEGIN SELECT RAISE(ABORT,'injected'); END"
++        )
++    with pytest.raises(Exception, match="injected"):
++        store.run_due(lambda _: True, 0)
++    assert store.users() == []
++    assert store.applications()[0]["status"] == "pending"
++    assert store.watch()["approved_count"] == 0
++    assert store.watch()["checked_at"] is None
++
++
++def test_competing_pollers_have_one_effect_per_application(store):
++    for index in range(100):
++        application(store, str(index))
++    store.set_watch(True, "admin")
++    with ThreadPoolExecutor(max_workers=2) as pool:
++        results = list(
++            pool.map(lambda _: store.run_due(lambda _owner: True, 100), range(2))
++        )
++    assert sorted(results) == [0, 100]
++    assert len(store.users()) == 100
++    assert store.watch()["approved_count"] == 100
++
++
++def test_pause_and_authorizer_revocation_prevent_writes(store):
++    application(store)
++    store.set_watch(False, "admin")
++    assert store.run_due(lambda _: True, 0) == 0
++    store.set_watch(True, "admin")
++    assert store.run_due(lambda _: False, 0) == 0
++    assert store.watch()["enabled"] is False
++    assert store.watch()["error"]
++    assert store.users() == []
++    assert store.pending_notifications("admin")[0]["kind"] == "error"
++
++
++def test_notifications_wait_for_client_and_ack_is_owner_scoped(store):
++    application(store)
++    store.set_watch(True, "admin")
++    store.run_due(lambda _: True, 0)
++    notification = store.pending_notifications("admin")[0]
++    assert store.pending_notifications("other-admin") == []
++    with pytest.raises(IndexError):
++        store.acknowledge("other-admin", notification["id"])
++    store.acknowledge("admin", notification["id"])
++    store.acknowledge("admin", notification["id"])
++    assert store.pending_notifications("admin") == []
++    assert store.users() == ["1001"]
++
++
++def test_wrong_identity_or_version_does_not_review(store):
++    first, second = application(store), application(store, "1002")
++    with pytest.raises(ReviewConflict):
++        store.review(
++            seq=0,
++            application_id=second["application_id"],
++            expected_version=1,
++            action="approve",
++            actor="admin",
++        )
++    with pytest.raises(ReviewConflict):
++        store.review(
++            application_id=first["application_id"],
++            expected_version=99,
++            action="approve",
++            actor="admin",
++        )
++    assert store.users() == []
+--- /dev/null
++++ b/packages/dbgpt-app/src/dbgpt_app/tests/test_expert_whitelist_http.py
+@@ -0,0 +1,152 @@
++import asyncio
++
++import httpx
++import pytest
++from fastapi import FastAPI
++
++import dbgpt_app.openapi.api_v1.agentic_data_api as api
++import dbgpt_app.openapi.api_v1.expert_whitelist_runtime as runtime
++import dbgpt_serve.utils.user_auth as auth
++
++
++@pytest.mark.asyncio
++async def test_dbgpt_custom_lifespan_starts_and_stops_the_watch(tmp_path, monkeypatch):
++    import dbgpt.util.fastapi as lifecycle
++
++    monkeypatch.setattr(lifecycle, "_GLOBAL_STARTUP_HANDLERS", [])
++    monkeypatch.setattr(lifecycle, "_GLOBAL_SHUTDOWN_HANDLERS", [])
++    monkeypatch.setattr(lifecycle, "_HAS_STARTUP", False)
++    monkeypatch.setattr(lifecycle, "_HAS_SHUTDOWN", False)
++    monkeypatch.setattr(
++        api, "EXPERT_MODE_APPLICATIONS_FILE", tmp_path / "applications.json"
++    )
++    monkeypatch.setattr(api, "EXPERT_MODE_WHITELIST_FILE", tmp_path / "whitelist.json")
++    service = runtime.WhitelistWatchService()
++    monkeypatch.setattr(runtime, "whitelist_watch_service", service)
++    app = lifecycle.create_app()
++    lifecycle.replace_router(app)
++    runtime.register_whitelist_watch(app)
++    async with app.router.lifespan_context(app):
++        assert service.task is not None and not service.task.done()
++        for _ in range(40):
++            if (tmp_path / "expert_mode.sqlite3").exists():
++                break
++            await asyncio.sleep(0.025)
++        assert (tmp_path / "expert_mode.sqlite3").exists()
++    assert service.task is None
++
++
++@pytest.mark.asyncio
++async def test_authenticated_http_watch_approval_outbox_and_restart(
++    tmp_path, monkeypatch
++):
++    monkeypatch.setattr(
++        api, "EXPERT_MODE_APPLICATIONS_FILE", tmp_path / "applications.json"
++    )
++    monkeypatch.setattr(api, "EXPERT_MODE_WHITELIST_FILE", tmp_path / "whitelist.json")
++    monkeypatch.setattr(auth, "_AUTH_DIR", str(tmp_path / "auth"))
++    monkeypatch.setattr(auth, "_AUTH_FILE", str(tmp_path / "auth" / "users.json"))
++    monkeypatch.setattr(auth, "_AUTH_STORE", None)
++    accounts = auth.get_user_auth_store()
++    accounts.register_user("integration-admin", "synthetic-password")
++    # This fixture alone assigns its test account the administrator role.
++    with auth._LOCK:
++        data = auth._load_storage()
++        data["users"]["integration-admin"]["role"] = "admin"
++        auth._save_storage(data)
++    _, admin_token = accounts.login("integration-admin", "synthetic-password")
++    _, normal_token = accounts.login("test", "test")
++    headers = {"user-id": "integration-admin", "x-auth-token": admin_token}
++    normal = {"user-id": "test", "x-auth-token": normal_token}
++    service = runtime.WhitelistWatchService()
++    monkeypatch.setattr(runtime, "whitelist_watch_service", service)
++    app = FastAPI()
++    app.include_router(api.router, prefix="/api")
++    await service.start()
++    try:
++        async with httpx.AsyncClient(
++            transport=httpx.ASGITransport(app), base_url="http://test"
++        ) as client:
++            assert (await client.get("/api/v1/expert-mode/watch")).status_code == 401
++            forged = await client.get(
++                "/api/v1/expert-mode/watch",
++                headers={**normal, "user-id": "integration-admin"},
++            )
++            assert forged.status_code == 401
++            denied = await client.post(
++                "/api/v1/expert-mode/watch", headers=normal, json={"enabled": True}
++            )
++            assert denied.json()["err_code"] == "E4030"
++
++            async def submit():
++                result = await client.post(
++                    "/api/v1/expert-mode/applications",
++                    headers=normal,
++                    json={
++                        "employee_id": "test",
++                        "department": "模拟部门",
++                        "usage_scenarios": ["数据清洗与整理"],
++                        "data_size": "小于10MB",
++                    },
++                )
++                assert result.json()["success"]
++                return result.json()["data"]["application_id"]
++
++            async def wait_approved(application_id):
++                for _ in range(60):
++                    rows = api.expert_mode_store().applications()
++                    if any(
++                        r["application_id"] == application_id
++                        and r["status"] == "approved"
++                        for r in rows
++                    ):
++                        return
++                    await asyncio.sleep(0.05)
++                pytest.fail("live watcher did not approve within the test budget")
++
++            first = await submit()
++            result = await client.post(
++                "/api/v1/expert-mode/watch", headers=headers, json={"enabled": True}
++            )
++            assert result.json()["success"]
++            await wait_approved(first)
++            notices = (
++                await client.get("/api/v1/expert-mode/notifications", headers=headers)
++            ).json()["data"]["notifications"]
++            assert len(notices) == 1 and notices[0]["application_id"] == first
++            ack = await client.post(
++                f"/api/v1/expert-mode/notifications/{notices[0]['id']}/ack",
++                headers=headers,
++            )
++            assert ack.json()["success"]
++            assert (
++                await client.get("/api/v1/expert-mode/notifications", headers=headers)
++            ).json()["data"]["notifications"] == []
++
++            await client.post(
++                "/api/v1/expert-mode/watch", headers=headers, json={"enabled": False}
++            )
++            second = await submit()
++            await asyncio.sleep(0.1)
++            assert api.expert_mode_store().applications()[-1]["status"] == "pending"
++            await client.post(
++                "/api/v1/expert-mode/watch", headers=headers, json={"enabled": True}
++            )
++            await wait_approved(second)
++
++            await service.stop()
++            third = await submit()
++            # Reconstruct the service, retaining only the database and the existing
++            # authorization.
++            service = runtime.WhitelistWatchService()
++            monkeypatch.setattr(runtime, "whitelist_watch_service", service)
++            await service.start()
++            # A persisted due time is respected on restart; make the test clock due
++            # without sleeping 30 seconds.
++            with api.expert_mode_store().transaction() as db:
++                db.execute("UPDATE whitelist_watch SET next_run=0 WHERE id=1")
++            service.wake.set()
++            await wait_approved(third)
++            assert api.expert_mode_store().watch()["approved_count"] == 3
++    finally:
++        await service.stop()

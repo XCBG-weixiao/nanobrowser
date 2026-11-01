@@ -1,0 +1,43 @@
+{
+  "model": "deepseek-v4-pro",
+  "synthetic_data_only": true,
+  "cases": [
+    {
+      "expected_tool": "get_whitelist_watch_status",
+      "observed": [
+        {
+          "name": "get_whitelist_watch_status",
+          "arguments": {}
+        }
+      ],
+      "http_status": 200,
+      "passed": true
+    },
+    {
+      "expected_tool": "set_whitelist_watch_state",
+      "observed": [
+        {
+          "name": "set_whitelist_watch_state",
+          "arguments": {
+            "enabled": false
+          }
+        }
+      ],
+      "http_status": 200,
+      "passed": true
+    },
+    {
+      "expected_tool": "set_whitelist_watch_state",
+      "observed": [
+        {
+          "name": "set_whitelist_watch_state",
+          "arguments": {
+            "enabled": true
+          }
+        }
+      ],
+      "http_status": 200,
+      "passed": true
+    }
+  ]
+}

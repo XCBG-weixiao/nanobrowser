@@ -463,5 +463,6 @@
   "models.noReasoning": "不推理",
   "notice.reasoningDropped": "此模型不接受推理設定；將不使用該設定繼續。",
   "notice.imagesDropped": "此模型不接受圖片；將不使用圖片繼續。",
-  "notice.stopped": "已停止 · 接下來要 Nanobrowser 做什麼？"
+  "notice.stopped": "已停止 · 接下來要 Nanobrowser 做什麼？",
+  "settings.nav.platform": "平台與自動審批"
 }

@@ -15,6 +15,7 @@ import { watchDialog } from './pointer';
 import { releaseActivates } from './keys';
 import { sendWithheld } from './withheld';
 import { quote } from '../text';
+import { frameAllowed } from '../perception/capture';
 
 /** A guard lasts this long after the last renewal. */
 const LIFETIME_MS = 4_000;
@@ -58,10 +59,14 @@ export class KeyGuard {
   /** Arms the text guard on the element and an away guard in every other frame of the tab. */
   static async arm(ctx: ToolContext, target: GuardedElement, options: KeyGuardOptions): Promise<KeyGuard> {
     const { cdp, topology } = await ctx.attach();
+    const frames = await topology.frames();
+    if (frames.some(f => !frameAllowed(f, frames, ctx.session.urlPolicy))) {
+      throw new LayerError('URL_NOT_ALLOWED', 'Keyboard input requires every frame to be within platform scope.');
+    }
     const probe = ctx.tab().probe!;
     if (target.objectId) await probe.call(target.frame, target.objectId, 'armGuard', 'text', LIFETIME_MS);
     else await probe.callGlobal(target.frame, 'armDocumentGuard', LIFETIME_MS);
-    const others = (await topology.frames()).filter(f => f.frameId !== target.frame.frameId);
+    const others = frames.filter(f => f.frameId !== target.frame.frameId);
     const armed = await Promise.all(
       others.map(f =>
         probe.callGlobal(f, 'armAwayGuard', LIFETIME_MS).then(
@@ -75,7 +80,7 @@ export class KeyGuard {
       target,
       armed.filter((f): f is FrameRecord => !!f),
       options,
-      watchDialog(cdp),
+      watchDialog(cdp, ctx.session.urlPolicy),
     );
   }
 

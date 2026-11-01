@@ -46,6 +46,7 @@ import './record-ax';
 import './observe-tools';
 import './observe-timing';
 import './navigation-policy';
+import './platform-scope';
 import './scenarios';
 import './probe';
 import './record-layout';

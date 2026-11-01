@@ -389,6 +389,12 @@ export function App() {
         <IconButton label={t('panel.settings')} onClick={() => void chrome.runtime.openOptionsPage()}>
           <SettingsIcon />
         </IconButton>
+        <button
+          type="button"
+          className="rounded px-2 py-1 text-xs hover:bg-nb-surface"
+          onClick={() => void chrome.tabs.create({ url: chrome.runtime.getURL('/options.html#platform') })}>
+          白名单审批
+        </button>
       </header>
       {confirmNewChat ? (
         <div className="flex items-center gap-2 border-b border-amber-200 bg-amber-50 px-3 py-1.5 text-xs text-amber-900 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-100">

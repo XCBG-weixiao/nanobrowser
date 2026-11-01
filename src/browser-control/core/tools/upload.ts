@@ -4,6 +4,7 @@
 // input's file list: CDP attaches a 0-byte file for a bad path, and the read-back says whether the files are there, not
 // whether the site accepted them.
 import { LayerError } from '../../protocol/errors';
+import { frameAllowed } from '../perception/capture';
 import type { UploadArgs } from '../../protocol/schemas';
 import type { ActionReceipt } from '../../protocol/results';
 import type { FileInfo, FileInputFacts } from '../../probe';
@@ -54,6 +55,9 @@ async function chooserInput(ctx: ToolContext): Promise<Input> {
   }
   const frames = await (await ctx.attach()).topology.frames();
   const frame = frames.find(f => f.frameId === chooser.frameId);
+  if (frame && !frameAllowed(frame, frames, ctx.session.urlPolicy)) {
+    throw new LayerError('URL_NOT_ALLOWED', 'The file chooser is outside platform scope.');
+  }
   if (!frame) throw new LayerError('FRAME_DETACHED', 'The frame of the file chooser is gone.');
   const probe = ctx.tab().probe!;
   const objectId = await probe.resolve(frame, chooser.backendNodeId);

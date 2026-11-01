@@ -463,5 +463,6 @@
   "models.noReasoning": "does not reason",
   "notice.reasoningDropped": "This model did not take the reasoning setting; continuing without it.",
   "notice.imagesDropped": "This model did not take images; continuing without them.",
-  "notice.stopped": "Stopped · What should Nanobrowser do instead?"
+  "notice.stopped": "Stopped · What should Nanobrowser do instead?",
+  "settings.nav.platform": "Platform"
 }

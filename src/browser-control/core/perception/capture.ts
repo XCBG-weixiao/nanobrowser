@@ -5,6 +5,21 @@ import type { AXNode } from './ax';
 import { LAYOUT_STYLES } from './layout';
 import type { RawSnapshot } from './layout';
 import { roleOf, valueOf } from './ax';
+import { allows } from '../url-policy';
+import type { UrlPolicy } from '../url-policy';
+
+/** Blank/srcdoc children inherit their parent's scope; other frames need their own allowed address. */
+export function frameAllowed(frame: FrameRecord, frames: FrameRecord[], policy: UrlPolicy): boolean {
+  if (policy.roots === undefined) return true;
+  const seen = new Set<string>();
+  let current: FrameRecord | undefined = frame;
+  while (current && !seen.has(current.frameId)) {
+    seen.add(current.frameId);
+    if (!['about:blank', 'about:srcdoc'].includes(current.url)) return allows(policy, current.url);
+    current = frames.find(f => f.frameId === current?.parentFrameId);
+  }
+  return false;
+}
 
 /** Limits: 20 frames, depth 5, minimum 10×10 px, ad frames skipped; 10 s per capture command. */
 export const FRAME_LIMITS = { maxFrames: 20, maxDepth: 5, minSize: 10 };
@@ -142,13 +157,17 @@ async function viewportOf(cdp: CdpPort): Promise<Viewport | null> {
 }
 
 /** Decides which frames are captured, before any AX call. */
-async function planFrames(cdp: CdpPort, frames: FrameRecord[]): Promise<FrameCapture[]> {
+async function planFrames(cdp: CdpPort, frames: FrameRecord[], policy?: UrlPolicy): Promise<FrameCapture[]> {
   const byId = new Map(frames.map(f => [f.frameId, f]));
   const planned = new Map<string, FrameCapture>();
   let captured = 0;
   for (const frame of frames) {
     const base: FrameCapture = { ...frame, ownerBackendNodeId: null, status: 'captured', nodes: [], fields: {} };
     planned.set(frame.frameId, base);
+    if (policy && !frameAllowed(frame, frames, policy)) {
+      Object.assign(base, { status: 'skipped', reason: 'outside the configured platform scope' });
+      continue;
+    }
     if (!frame.parentFrameId) {
       captured++;
       continue;
@@ -245,12 +264,20 @@ export async function captureTier1(
   cdp: CdpPort,
   topology: TopologyPort,
   state: CaptureState,
+  policy?: UrlPolicy,
 ): Promise<Capture> {
   const start = performance.now();
   const frames = await topology.frames();
-  await Promise.all([...new Set(frames.map(f => f.sessionId))].map(s => enableDomains(cdp, s, state.enabledSessions)));
-  const planned = await planFrames(cdp, frames);
-  const layoutPromise = captureLayout(cdp, planned, state);
+  const permitted = policy ? frames.filter(f => frameAllowed(f, frames, policy)) : frames;
+  await Promise.all(
+    [...new Set(permitted.map(f => f.sessionId))].map(s => enableDomains(cdp, s, state.enabledSessions)),
+  );
+  const planned = await planFrames(cdp, frames, policy);
+  // DOMSnapshot captures entire renderer sessions. Do not collect it when it could include a forbidden frame.
+  const layoutPromise: Promise<{ layout?: Record<string, RawSnapshot>; error?: string }> =
+    permitted.length !== frames.length
+      ? Promise.resolve({ error: 'layout capture omitted because the page contains a frame outside platform scope' })
+      : captureLayout(cdp, planned, state);
   await Promise.all(
     planned
       .filter(f => f.status === 'captured')

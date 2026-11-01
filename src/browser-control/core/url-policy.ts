@@ -11,6 +11,54 @@ export interface UrlPolicy {
    * The deny and allow lists keep their own rules for the test panel.
    */
   blocked?: string[];
+  /** When present, only these exact HTTP(S) origins and path subtrees may be observed or controlled. */
+  roots?: string[];
+}
+
+/** Reject ambiguous credentials, query/hash scopes and encoded path separators. */
+export function scopeRoot(value: string): string {
+  const url = new URL(value.trim());
+  if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) {
+    throw new Error('平台范围必须是没有账号、查询参数和片段的 HTTP(S) 网址。');
+  }
+  if (/%(?:2f|5c|25)/i.test(url.pathname)) throw new Error('平台路径不能包含编码后的分隔符或嵌套编码。');
+  return url.origin + (url.pathname.replace(/\/+$/, '') || '/');
+}
+
+export function withinRoots(url: string, roots: readonly string[]): boolean {
+  try {
+    const target = new URL(url);
+    if (
+      !['http:', 'https:'].includes(target.protocol) ||
+      target.username ||
+      target.password ||
+      /%(?:2f|5c|25)/i.test(target.pathname)
+    )
+      return false;
+    return roots.some(value => {
+      const root = new URL(scopeRoot(value));
+      const path = root.pathname;
+      return (
+        target.origin === root.origin &&
+        (path === '/' || target.pathname === path || target.pathname.startsWith(path + '/'))
+      );
+    });
+  } catch {
+    return false;
+  }
+}
+
+/** A dialog's free text is page content too. Unknown sources are excluded under a strict platform policy. */
+export function scopedDialog<T extends { url?: string; message: string; defaultPrompt?: string }>(
+  dialog: T,
+  policy: UrlPolicy,
+): T {
+  if (policy.roots === undefined || allows(policy, dialog.url ?? '')) return dialog;
+  return {
+    ...dialog,
+    message: 'A dialog outside platform scope is open. Ask the user to handle it.',
+    defaultPrompt: undefined,
+  };
 }
 
 export const EMPTY_POLICY: UrlPolicy = { allow: [], deny: [], blocked: [] };
@@ -94,16 +142,23 @@ export function normalizePolicy(policy: UrlPolicy): UrlPolicy {
     allow: clean(policy.allow),
     deny: clean(policy.deny),
     blocked: [...new Set((policy.blocked ?? []).map(siteKey).filter(Boolean))],
+    ...(policy.roots !== undefined ? { roots: [...new Set(policy.roots.map(scopeRoot))] } : {}),
   };
 }
 
 export function allows(policy: UrlPolicy, url: string): boolean {
-  return !isBlockedSite(url, policy.blocked) && isUrlAllowed(url, policy.allow, policy.deny);
+  return (
+    (policy.roots === undefined || withinRoots(url, policy.roots)) &&
+    !isBlockedSite(url, policy.blocked) &&
+    isUrlAllowed(url, policy.allow, policy.deny)
+  );
 }
 
 /** Layer 3 runs only when a list is configured; the always-blocked schemes are covered by layers 1, 2 and 4. */
 export function hasLists(policy: UrlPolicy): boolean {
-  return policy.allow.length > 0 || policy.deny.length > 0 || (policy.blocked?.length ?? 0) > 0;
+  return (
+    policy.roots !== undefined || policy.allow.length > 0 || policy.deny.length > 0 || (policy.blocked?.length ?? 0) > 0
+  );
 }
 
 /** The most restrictive combination: a URL passes only if every policy allows it. */

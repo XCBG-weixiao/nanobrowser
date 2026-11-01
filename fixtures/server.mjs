@@ -58,6 +58,7 @@ const autorunJobs = [];
 const llm = { replies: [], requests: [], transcriptions: [], rejectReasoning: false };
 /** The fake PostHog: the events it received, and how many more to refuse. */
 const posthog = { events: [], fail: 0 };
+const platform = { acknowledgements: 0, enabled: false };
 export const autorunEvents = new EventEmitter();
 
 export function queueAutorunJob(job) {
@@ -107,6 +108,59 @@ async function handle(req, res) {
   const path = url.pathname;
 
   if (req.method === 'OPTIONS') return send(res, 204, '');
+
+  if (path === '/__platform/reset') {
+    platform.acknowledgements = 0;
+    platform.enabled = false;
+    return send(res, 200, { success: true });
+  }
+  if (path === '/__platform/state') return send(res, 200, platform);
+  if (path.startsWith('/__platform/api/')) {
+    if (req.headers['user-id'] !== 'fixture-admin' || req.headers['x-auth-token'] !== 'synthetic-session') {
+      return send(res, 401, { success: false });
+    }
+    if (path.endsWith('/notifications'))
+      return send(res, 200, {
+        success: true,
+        data: {
+          notifications: platform.acknowledgements
+            ? []
+            : [
+                {
+                  id: 'fixture-approval',
+                  application_id: 'synthetic-application',
+                  employee_id: 'synthetic-1001',
+                  kind: 'approved',
+                  message: 'synthetic approval',
+                  at: '2026-11-02T01:00:00Z',
+                },
+              ],
+        },
+      });
+    if (path.endsWith('/notifications/fixture-approval/ack') && req.method === 'POST') {
+      platform.acknowledgements++;
+      return send(res, 200, { success: true, data: true });
+    }
+    if (path.endsWith('/watch') && req.method === 'POST') {
+      const body = JSON.parse(await readBody(req));
+      if (typeof body.enabled !== 'boolean') return send(res, 400, { success: false });
+      platform.enabled = body.enabled;
+    }
+    if (path.endsWith('/watch'))
+      return send(res, 200, {
+        success: true,
+        data: {
+          enabled: platform.enabled,
+          owner: 'fixture-admin',
+          pending_count: 0,
+          approved_count: 1,
+          checked_at: '2026-11-02T01:00:00Z',
+          error: null,
+          recent: [],
+        },
+      });
+    return send(res, 404, { success: false });
+  }
 
   if (path.startsWith('/__')) {
     if (path === '/__requests') {

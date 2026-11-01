@@ -56,7 +56,7 @@ export function layerPort(session: Session, border?: Pick<PageBorder, 'around'>)
     tabInfo(tabId) {
       if (!session.hasTab(tabId)) return null;
       const state = session.controller.tabState(tabId);
-      return { rev: state.rev, pending: [...state.pending] };
+      return { rev: state.rev, pending: session.pending(tabId) };
     },
     wrap: (text, source) => session.wrap(text, source),
   };

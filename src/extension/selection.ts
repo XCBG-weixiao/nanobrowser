@@ -15,6 +15,7 @@ export function listenForSelections(manager: RunManager): void {
   });
   chrome.contextMenus.onClicked.addListener((info, tab) => {
     if (info.menuItemId !== MENU_ID || tab?.id === undefined || !info.selectionText) return;
+    if (!manager.permissions.allows(tab.url ?? info.pageUrl ?? '')) return;
     const tabId = tab.id;
     void chrome.sidePanel.setOptions({ tabId, path: PANEL_PATH, enabled: true }).catch(() => undefined);
     void chrome.sidePanel.open({ tabId }).catch(() => undefined);

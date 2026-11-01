@@ -14,6 +14,7 @@ import { observeTab, recentObservation } from '../tools/observe';
 import { NodeArg } from '../probe-client';
 import { fingerprint } from '../hash';
 import { quote } from '../text';
+import { frameAllowed } from '../perception/capture';
 
 export interface ResolvedTarget {
   record: RefRecord;
@@ -158,6 +159,9 @@ export async function resolveRecord(
   }
   const frame = frames.find(f => f.frameId === record.frameId);
   if (!frame) throw new LayerError('FRAME_DETACHED', `The frame of ${record.ref} is gone`);
+  if (!frameAllowed(frame, frames, ctx.session.urlPolicy)) {
+    throw new LayerError('URL_NOT_ALLOWED', 'The target frame is outside the configured platform scope.');
+  }
   if (frame.loaderId !== record.loaderId) {
     throw new LayerError('STALE_DOCUMENT', `The frame of ${record.ref} has loaded a new document`);
   }

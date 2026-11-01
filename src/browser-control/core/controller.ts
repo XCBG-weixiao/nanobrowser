@@ -17,7 +17,7 @@ import type { CaptureState } from './perception/capture';
 import type { Observation } from './perception/observe';
 import { NavigationGuard } from './navigation-guard';
 import { ProbeClient } from './probe-client';
-import { combinePolicies, EMPTY_POLICY, hasLists, isBlockedSite, normalizePolicy } from './url-policy';
+import { allows, combinePolicies, EMPTY_POLICY, hasLists, isBlockedSite, normalizePolicy } from './url-policy';
 import type { UrlPolicy } from './url-policy';
 import { defuseQuotes, dialogDetail, errorLine, newNonce, pendingLines, quote, receiptLines, untrusted } from './text';
 import type { ContentSource, DefuseOptions } from './text';
@@ -126,6 +126,7 @@ export interface TabState {
     defaultPrompt?: string;
     /** Whether Chrome can show the dialog to the user (`Page.javascriptDialogOpening`), for the prompt hand-over. */
     hasBrowserHandler: boolean;
+    url?: string;
   } | null;
   /** The file chooser a page opened, intercepted so the OS dialog never opens; `upload` fills it. */
   fileChooser: { frameId: string; backendNodeId: number; mode: 'selectSingle' | 'selectMultiple' } | null;
@@ -307,13 +308,30 @@ export class Controller {
           });
           // Modal states: a JavaScript dialog blocks the tab until it is handled, whoever opened it.
           attachment.cdp.on('Page.javascriptDialogOpening', (params, sessionId) => {
-            const p = params as { type: string; message: string; defaultPrompt?: string; hasBrowserHandler?: boolean };
+            let p = params as {
+              url?: string;
+              type: string;
+              message: string;
+              defaultPrompt?: string;
+              hasBrowserHandler?: boolean;
+            };
+            if (
+              this.#policiesFor(tabId).some(policy => policy.roots !== undefined) &&
+              !this.allowedFor(tabId)(p.url ?? '')
+            ) {
+              p = {
+                ...p,
+                message: 'A dialog outside platform scope is open. Ask the user to handle it.',
+                defaultPrompt: undefined,
+              };
+            }
             state.dialog = {
               sessionId,
               type: p.type,
               message: p.message,
               defaultPrompt: p.defaultPrompt,
               hasBrowserHandler: p.hasBrowserHandler ?? true,
+              url: p.url,
             };
             const detail = dialogDetail(p);
             if (!state.pending.some(m => m.kind === 'dialog')) state.pending.push({ kind: 'dialog', detail });
@@ -537,12 +555,16 @@ export class Session {
 
   /** Refuses a tab whose page is on a blocked site. */
   async checkTabSite(tabId: number): Promise<void> {
-    if (!this.#urlPolicy.blocked?.length) return;
+    if (this.#urlPolicy.roots === undefined && !this.#urlPolicy.blocked?.length) return;
     const tab = await this.controller.host.tabs.get(tabId);
-    if (tab && isBlockedSite(tab.url, this.#urlPolicy.blocked)) {
+    const permitted =
+      this.#urlPolicy.roots === undefined
+        ? !tab || !isBlockedSite(tab.url, this.#urlPolicy.blocked)
+        : !!tab && allows(this.#urlPolicy, tab.url);
+    if (!permitted) {
       throw new LayerError(
         'URL_NOT_ALLOWED',
-        `Tab ${tabId} is on ${quote(siteOf(tab.url))}, a site the user blocked. Nothing was done on it.`,
+        `Tab ${tabId} is outside the configured platform scope. Nothing was read or dispatched.`,
       );
     }
   }
@@ -560,6 +582,11 @@ export class Session {
   /** For the host (the user's settings), never for the agent: the protocol has no call that changes the policy. */
   async setUrlPolicy(policy: UrlPolicy): Promise<void> {
     this.#urlPolicy = normalizePolicy(policy);
+    this.seen.clear();
+    for (const tabId of this.tabIds()) {
+      this.known.forget(tabId);
+      this.controller.tabState(tabId).last = undefined;
+    }
     await this.controller.syncPolicies();
   }
 
@@ -573,6 +600,18 @@ export class Session {
 
   hasTab(tabId: number): boolean {
     return this.#tabs.has(tabId);
+  }
+
+  /** Dialog text is page content, including when another session attached before this scope was configured. */
+  pending(tabId: number): PendingModal[] {
+    const state = this.controller.tabState(tabId);
+    const outside =
+      this.#urlPolicy.roots !== undefined && state.dialog && !allows(this.#urlPolicy, state.dialog.url ?? '');
+    return state.pending.map(item =>
+      outside && item.kind === 'dialog'
+        ? { ...item, detail: 'A dialog outside platform scope is open. Ask the user to handle it.' }
+        : item,
+    );
   }
 
   /** The user shares a tab with the session (or the session opened it). It becomes the active tab. */
@@ -709,7 +748,7 @@ export class Session {
       // A JavaScript dialog blocks the renderer: nothing but handle_dialog can work on the tab meanwhile.
       // While the user is asked to confirm or to do something, the tab belongs to the user.
       if (tabId !== null) {
-        const pending = this.controller.tabState(tabId).pending;
+        const pending = this.pending(tabId);
         const dialog = pending.find(m => m.kind === 'dialog');
         if (dialog && tool !== 'handle_dialog') {
           throw new LayerError('MODAL_PENDING', `A dialog is open on this tab: ${dialog.detail}. Use handle_dialog.`);
@@ -731,15 +770,16 @@ export class Session {
         attach: () => this.controller.attach(tabId!),
         signal: options.signal,
       };
-      const run = () => {
+      const run = async () => {
         checkCancelled(ctx);
+        if (tabId !== null) await this.checkTabSite(tabId);
         return handler(ctx, args);
       };
       const outcome = tabId === null ? await run() : await this.controller.locks.run(tabId, run);
       result = this.#render(tool, outcome, tabId);
     } catch (error) {
       const protocolError = toProtocolError(error, readOnly);
-      const pending = tabId !== null ? this.controller.tabState(tabId).pending : [];
+      const pending = tabId !== null ? this.pending(tabId) : [];
       const partial = isLayerError(error) ? error.partial : undefined;
       result = {
         ok: false,
@@ -783,7 +823,7 @@ export class Session {
   }
 
   #render(tool: string, outcome: ToolOutcome, tabId: number | null): Result {
-    const pending = tabId !== null ? this.controller.tabState(tabId).pending : [];
+    const pending = tabId !== null ? this.pending(tabId) : [];
     const text: string[] = [];
     const policy = this.#policyNotices(tabId);
     if (outcome.receipt) text.push(...receiptLines(outcome.receipt));

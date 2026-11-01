@@ -1,18 +1,43 @@
 // Permissions in the extension: the mode belongs to the conversation, the site rules are one map in chrome.storage, and
 // the layer asks `decideWrite` for each classified write.
 // Blocked sites go into every agent session's navigation policy.
-import type { WriteDecision, WriteQuestion } from '@src/browser-control';
+import { scopeRoot, withinRoots } from '@src/browser-control';
+import type { UrlPolicy, WriteDecision, WriteQuestion } from '@src/browser-control';
 import { decideWrite, siteRulesStorage } from '@src/store/settings';
 import type { SiteRuleEntry } from '@src/store/settings';
 import type { PermissionMode } from '@src/store/types';
+import { platformStorage } from '@src/store/platform';
 
 export class Permissions {
   #rules: Record<string, SiteRuleEntry> = {};
   #listeners = new Set<() => void>();
+  #root = '';
 
   constructor() {
     void siteRulesStorage.get().then(rules => this.#set(rules));
     siteRulesStorage.subscribe(() => this.#set(siteRulesStorage.getSnapshot() ?? {}));
+    void platformStorage.get().then(config => this.#setRoot(config.pageRoot));
+    platformStorage.subscribe(() => this.#setRoot(platformStorage.getSnapshot()?.pageRoot ?? ''));
+  }
+
+  #setRoot(value: string): void {
+    let root = '';
+    try {
+      if (value) root = scopeRoot(value);
+    } catch {
+      /* Invalid stored scope denies every page. */
+    }
+    if (root === this.#root) return;
+    this.#root = root;
+    this.#listeners.forEach(listener => listener());
+  }
+
+  policy(): UrlPolicy {
+    return { allow: [], deny: [], blocked: this.blockedSites(), roots: this.#root ? [this.#root] : [] };
+  }
+
+  allows(url: string): boolean {
+    return withinRoots(url, this.#root ? [this.#root] : []);
   }
 
   #set(rules: Record<string, SiteRuleEntry>): void {
@@ -29,6 +54,7 @@ export class Permissions {
 
   async ready(): Promise<void> {
     this.#set(await siteRulesStorage.get());
+    this.#setRoot((await platformStorage.get()).pageRoot);
   }
 
   blockedSites(): string[] {

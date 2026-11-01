@@ -5,6 +5,7 @@ import type { NavigationTarget } from '../../probe';
 import type { ToolContext } from '../controller';
 import type { FrameRecord } from '../ports';
 import { quote } from '../text';
+import { frameAllowed } from '../perception/capture';
 
 export async function preflightNavigation(
   ctx: ToolContext,
@@ -17,7 +18,7 @@ export async function preflightNavigation(
   const nav = await probe.call<NavigationTarget | null>(frame, objectId, 'navigationTarget', mode).catch(() => null);
   if (!nav) return null;
   // The policy applies to main-frame documents: a link inside a frame that targets its own frame does not.
-  if (frame.parentFrameId && !nav.newTab) return nav;
+  if (ctx.session.urlPolicy.roots === undefined && frame.parentFrameId && !nav.newTab) return nav;
   if (!ctx.controller.allowedFor(ctx.tab().tabId)(nav.url)) {
     const what =
       nav.kind === 'link' ? `links to ${quote(nav.url)}` : `submits the form to ${quote(nav.url)} (${nav.method})`;
@@ -43,6 +44,12 @@ export async function focusedElement(
 ): Promise<{ frame: FrameRecord; objectId: string; backendNodeId: number } | null> {
   const attachment = await ctx.attach();
   const frames = [...(await attachment.topology.frames())].sort((a, b) => b.depth - a.depth);
+  if (frames.some(f => !frameAllowed(f, frames, ctx.session.urlPolicy))) {
+    throw new LayerError(
+      'URL_NOT_ALLOWED',
+      'Keyboard input requires every frame on the page to be within platform scope.',
+    );
+  }
   for (const frame of frames) {
     const found = await ctx
       .tab()

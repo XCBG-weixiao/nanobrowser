@@ -50,6 +50,9 @@ import { addPromptRoute, controllerReady } from './layer';
 import { Permissions } from './permissions';
 import { PromptBroker } from './prompt-broker';
 import { notifyFinished, notifyNeeds } from './notify';
+import { watchStatus, setWatch, clearPlatformConnection } from './platform';
+import { WHITELIST_TOOLS } from '@src/agent/whitelist-tools';
+import { platformCredentials, platformStorage } from '@src/store/platform';
 import { thumbnail } from './thumbnail';
 import { isNumberedCopy, saveText } from './downloads';
 import { checkSave } from '@src/agent/save-file';
@@ -110,6 +113,7 @@ export class RunManager {
   constructor() {
     this.scope = new TabScope({
       blocked: () => this.permissions.blockedSites(),
+      allowed: url => this.permissions.allows(url),
       changed: (conversationId, added, removed) => void this.#scopeChanged(conversationId, added, removed),
     });
     this.border = new PageBorder({
@@ -141,7 +145,7 @@ export class RunManager {
     // A site the user blocks is refused in every open session at once.
     this.permissions.onBlockedChange(() => {
       for (const session of this.#sessions.values()) {
-        void session.setUrlPolicy({ allow: [], deny: [], blocked: this.permissions.blockedSites() });
+        void session.setUrlPolicy(this.permissions.policy());
       }
     });
   }
@@ -274,7 +278,7 @@ export class RunManager {
     await this.permissions.ready();
     const session = createAgentSession(controller, {
       decideWrite: question => this.permissions.decide(this.#modes.get(conversationId) ?? 'ask', question),
-      urlPolicy: { allow: [], deny: [], blocked: this.permissions.blockedSites() },
+      urlPolicy: this.permissions.policy(),
       // The watching rule: a tab becomes visible only while the user is on the conversation's tabs.
       reveal: () => this.scope.watching(conversationId),
       onTabJoined: (tabId, how) => {
@@ -435,7 +439,7 @@ export class RunManager {
       if (answer === 'given-back') {
         const controller = await controllerReady;
         const session = createAgentSession(controller, {
-          urlPolicy: { allow: [], deny: [], blocked: this.permissions.blockedSites() },
+          urlPolicy: this.permissions.policy(),
         });
         session.shareTab(tab.id!);
         const seen = await session.call('snapshot', { tabId: tab.id });
@@ -726,6 +730,7 @@ export class RunManager {
    * stays.
    */
   async deleteAll(): Promise<void> {
+    await clearPlatformConnection();
     // A move from the old Nanobrowser that is still running would write its data back after the deletion.
     await upgradeFromOldVersion().catch(() => undefined);
     // Analytics keeps the user's two switches through it, and clears its own keys.
@@ -802,10 +807,20 @@ export class RunManager {
     const text = command.text.trim();
     if (!text && !command.attachments.length && !command.context.some(c => c.kind === 'selection')) return;
     // A shortcut's start page is a web address on a site the user has not blocked.
+    await this.permissions.ready();
+    for (const context of command.context) {
+      if (context.kind === 'selection' && !this.permissions.allows(context.url)) {
+        throw new Error('选中内容来自允许范围以外的页面，无法读取。');
+      }
+    }
     const startUrl = command.startUrl;
     if (startUrl) {
       await this.permissions.ready();
-      if (!isStartUrl(startUrl) || isBlockedSite(startUrl, this.permissions.blockedSites())) {
+      if (
+        !isStartUrl(startUrl) ||
+        !this.permissions.allows(startUrl) ||
+        isBlockedSite(startUrl, this.permissions.blockedSites())
+      ) {
         this.journal.direct(command.conversationId, connection.sink, { type: 'error', message: 'shortcut.blocked' });
         return;
       }
@@ -984,6 +999,7 @@ export class RunManager {
 
   /** "Ask Nanobrowser about this": the selection becomes a quote chip in the tab's panel. */
   addSelection(tabId: number, selection: { text: string; url: string; title: string }): void {
+    if (!this.permissions.allows(selection.url)) return;
     const open = [...this.connections].filter(c => c.tabId === tabId);
     if (!open.length) {
       this.#selections.set(tabId, [...(this.#selections.get(tabId) ?? []), selection]);
@@ -1003,6 +1019,40 @@ export class RunManager {
     call: ToolCallRequest,
     signal: AbortSignal,
   ): Promise<{ text: string; isError: boolean }> {
+    if (call.toolName === 'get_whitelist_watch_status' || call.toolName === 'set_whitelist_watch_state') {
+      try {
+        const args = (call.input ?? {}) as Record<string, unknown>;
+        let status;
+        if (call.toolName === 'get_whitelist_watch_status') {
+          if (Object.keys(args).length) throw new Error('此工具不接受参数。');
+          status = await watchStatus(signal);
+        } else {
+          if (typeof args.enabled !== 'boolean' || Object.keys(args).some(k => k !== 'enabled'))
+            throw new Error('enabled 必须是布尔值。');
+          if (args.enabled) {
+            const config = await platformStorage.get();
+            const answer = await this.broker.open<'yes' | 'no'>(
+              conversationId,
+              'confirm',
+              {
+                purpose: 'whitelist-watch',
+                title: `是否启用 ${config.pageRoot} 的白名单自动审批？已有和新增的待审批申请将全部自动同意，并通过桌面通知提示。`,
+              },
+              signal,
+            );
+            if (answer !== 'yes') return { text: '用户未启用自动审批，任务未更改。', isError: true };
+          }
+          status = await setWatch(args.enabled, signal);
+        }
+        const session = this.#sessions.get(conversationId)!;
+        return {
+          text: session.wrap(JSON.stringify(status), { site: (await platformStorage.get()).pageRoot }),
+          isError: false,
+        };
+      } catch (error) {
+        return { text: error instanceof Error ? error.message : '平台操作失败。', isError: true };
+      }
+    }
     if (call.toolName !== 'save_file') return { text: `error: ${call.toolName} is not available.`, isError: true };
     const args = (call.input ?? {}) as Record<string, unknown>;
     const check = checkSave(args);
@@ -1085,7 +1135,7 @@ export class RunManager {
     const controller = await controllerReady;
     await this.permissions.ready();
     const session = createAgentSession(controller, {
-      urlPolicy: { allow: [], deny: [], blocked: this.permissions.blockedSites() },
+      urlPolicy: this.permissions.policy(),
     });
     let result;
     try {
@@ -1130,7 +1180,10 @@ export class RunManager {
     try {
       const model = await resolveModel(await livePair(conversationId));
       const settings = (await settingsStorage.get()) ?? DEFAULT_SETTINGS;
-      const tools = toolsForRun({ vision: model.profile.vision });
+      const tools = toolsForRun({
+        vision: model.profile.vision,
+        agentTools: (await platformCredentials.get()) ? WHITELIST_TOOLS : [],
+      });
       const system = agentSystemPrompt({
         responseLanguage: settings.responseLanguage,
         tools: tools.map(t => t.name),
@@ -1299,7 +1352,10 @@ export class RunManager {
         this.#modes.set(conversationId, conversation.mode);
         const session = await this.#openSession(conversationId);
         record.tabs = session.tabIds();
-        const tools = toolsForRun({ vision: model.profile.vision });
+        const tools = toolsForRun({
+          vision: model.profile.vision,
+          agentTools: (await platformCredentials.get()) ? WHITELIST_TOOLS : [],
+        });
         const loop = new AgentLoop({
           conversationId,
           runId,

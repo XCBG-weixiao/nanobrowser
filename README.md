@@ -18,6 +18,8 @@
 
 ## 🌐 Nanobrowser
 
+本分支新增指定平台访问范围、dbgpt 白名单自动审批、任务启停和浏览器桌面通知，需要同时部署改造后的 dbgpt 后端。见[使用与内网部署说明](docs/whitelist-automation-usage.zh-CN.md)、[已确认的改造方案](docs/whitelist-automation-plan.zh-CN.md)和[调研报告](docs/research/superagent-whitelist-research.zh-CN.md)。
+
 Nanobrowser is an open-source AI agent that works in your own browser. Tell it a task in the side panel; it reads the pages, clicks, types and moves between tabs to get it done, and it asks you before it submits, sends, deletes or uploads anything.
 
 ⬇️ Get [Nanobrowser from the Chrome Web Store](https://chromewebstore.google.com/detail/nanobrowser/imbddededgmcgfhfpcjmijokokekbkal) for free

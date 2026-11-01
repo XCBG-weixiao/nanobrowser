@@ -10,10 +10,12 @@ import { setUninstallPage } from './uninstall';
 import { openWhatsNew } from '@src/store/whats-new';
 import { WHATS_NEW, releaseOf } from '@src/ui/whats-new';
 import { DATA_REQUEST } from '@src/ui/protocol';
+import { listenForPlatform } from './platform';
 
 export const runManager = new RunManager();
 listenForPanels(runManager);
 listenForSelections(runManager);
+listenForPlatform();
 // The watchdog alarm only wakes the worker; starting it is what restores an unfinished run.
 // The welcome page and the first shortcut on install. Unattended check builds are installed on every run, so they
 // skip both.

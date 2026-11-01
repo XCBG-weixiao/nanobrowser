@@ -1,0 +1,42 @@
+{
+  "packages/dbgpt-app/src/dbgpt_app/openapi/api_v1/agentic_data_api.py": {
+    "before_sha256": "74aae2016ce29e0bc93463017681d8503e5d4188aeabc5a67fc65c6be4e36302",
+    "after_sha256": "4863ef72374ad69fb0e63892512fb3184f31230e985927ed3a550f5f03597203"
+  },
+  "packages/dbgpt-app/src/dbgpt_app/dbgpt_server.py": {
+    "before_sha256": "a12ac7708ed5c1be7a1fd1c68c3672755ca4071de7d6eeca326e642f2cf3ee35",
+    "after_sha256": "6f0635997ba0158923676c1f871a78eba548d51e6645d2c0e92248ee6509e001"
+  },
+  "packages/dbgpt-serve/src/dbgpt_serve/utils/user_auth.py": {
+    "before_sha256": "e0d68a311f4a9ed36afe65c850c934b12a44478bb62a27546c735cdc3064baac",
+    "after_sha256": "555884e7aa90018c1287010642dd6de54690864045b603df2b1082f8cc67be0c"
+  },
+  "web/pages/construct/expert-whitelist/index.tsx": {
+    "before_sha256": "1ab28def77ad7e034f5c2841cf343f22e60910e26e36abe8b5b10da46491104a",
+    "after_sha256": "a2d8cec61b5946bc87de4eb3c574e72f8106849ea4e640bbd8d5467f72a6c640"
+  },
+  "packages/dbgpt-app/src/dbgpt_app/tests/test_expert_mode_access.py": {
+    "before_sha256": "9acf68831f62253ecd8f4eac07ae287ac266305a4b435bd6fbc1f6672170ab55",
+    "after_sha256": "829d24df0eb967b6a3a2d318c06fb8c1ddb6f919cfbcacfe6c7e22dac70152fe"
+  },
+  "change.md": {
+    "before_sha256": "55b1f2acdb254d00e4cab4189e68a6bbe201b312011bf46212aac957ac21a360",
+    "after_sha256": "71787208dc651e00ed3853b6aae050796ee2a97ea39f181e815807c61e3fd8c6"
+  },
+  "packages/dbgpt-app/src/dbgpt_app/openapi/api_v1/expert_whitelist_store.py": {
+    "before_sha256": null,
+    "after_sha256": "4ef8e27e6b880f46b3fa3f7e192e8274a402ca1ebce7dde322396e29aa9b6612"
+  },
+  "packages/dbgpt-app/src/dbgpt_app/openapi/api_v1/expert_whitelist_runtime.py": {
+    "before_sha256": null,
+    "after_sha256": "db364772d57887d4ab7f4893f05df76bd9ef549ec48ee8904cee0c5ce8b90209"
+  },
+  "packages/dbgpt-app/src/dbgpt_app/tests/test_expert_whitelist_store.py": {
+    "before_sha256": null,
+    "after_sha256": "d6cd0efc03ec535cabd940ea6f86ef598679bc099fc8548180fbedfbde07bacf"
+  },
+  "packages/dbgpt-app/src/dbgpt_app/tests/test_expert_whitelist_http.py": {
+    "before_sha256": null,
+    "after_sha256": "b4a0d781196e217a09b149541f60d887d38c1f4f916ba64706756685da3c6c1e"
+  }
+}

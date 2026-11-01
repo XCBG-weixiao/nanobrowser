@@ -18,7 +18,7 @@ export type { ContentSource, DefuseOptions } from './core/text';
 export { siteOf } from './core/site';
 export { PROBE_SOURCE, PROBE_WORLD_NAME } from './probe';
 export type { ProbeState } from './probe';
-export { isUrlAllowed, isBlockedSite, siteKey } from './core/url-policy';
+export { isUrlAllowed, isBlockedSite, siteKey, scopeRoot, withinRoots, allows } from './core/url-policy';
 export type { UrlPolicy } from './core/url-policy';
 export { captureTier1 } from './core/perception/capture';
 export type { Capture, FrameCapture } from './core/perception/capture';

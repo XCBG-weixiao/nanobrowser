@@ -17,6 +17,7 @@ import { checkCancelled } from '../controller';
 import type { DialogInfo } from '../interaction/pointer';
 import { withPageState } from './navigate';
 import { dialogDetail } from '../text';
+import { frameAllowed } from '../perception/capture';
 
 /** Runs fn with a resolved target and always releases the probe's handle on it. */
 export async function withTarget<T>(
@@ -219,6 +220,13 @@ export async function scroll(ctx: ToolContext, args: ScrollArgs): Promise<ToolOu
     });
   }
   const run = async (container: ResolvedTarget | null): Promise<ToolOutcome> => {
+    const frames = await (await ctx.attach()).topology.frames();
+    if (frames.some(frame => !frameAllowed(frame, frames, ctx.session.urlPolicy))) {
+      throw new LayerError(
+        'URL_NOT_ALLOWED',
+        'Wheel scrolling is unavailable while a frame is outside platform scope.',
+      );
+    }
     let point;
     if (container) {
       const needs = { pointer: true, overControls: true, budgetMs: args.timeoutMs };

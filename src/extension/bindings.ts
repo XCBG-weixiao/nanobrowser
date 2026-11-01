@@ -41,6 +41,7 @@ const PREFIX: Partial<Record<RunStatus, string>> = { running: '● ', awaiting_u
 export interface ScopeHooks {
   /** The sites the user blocked (a tab on one is not shared). */
   blocked(): string[];
+  allowed?(url: string): boolean;
   /**
    * The scope of a conversation changed: its panels get the new list, its session the new tabs. Called with no tabs
    * added or removed when a tab's title, address or icon changed.
@@ -104,7 +105,7 @@ export class TabScope {
     for (const [id, b] of Object.entries(state.tabs)) {
       if (b.conversationId !== conversationId) continue;
       const tab = await chrome.tabs.get(Number(id)).catch(() => null);
-      if (tab)
+      if (tab && (this.hooks.allowed?.(tab.url ?? '') ?? true))
         out.push({
           tabId: tab.id!,
           title: tab.title ?? '',
@@ -129,6 +130,8 @@ export class TabScope {
   ): Promise<{ ok: true } | { ok: false; reason: 'blocked' | 'owned' | 'gone'; owner?: string }> {
     const tab = await chrome.tabs.get(tabId).catch(() => null);
     if (!tab) return { ok: false, reason: 'gone' };
+    if (this.hooks.allowed && !this.hooks.allowed(tab.url ?? tab.pendingUrl ?? ''))
+      return { ok: false, reason: 'blocked' };
     const site = siteOf(tab.url ?? tab.pendingUrl ?? '');
     if (site && this.hooks.blocked().includes(site)) return { ok: false, reason: 'blocked' };
     const state = await load();

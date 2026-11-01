@@ -8,6 +8,7 @@ import type { TabState, ToolContext } from '../controller';
 import type { ResolvedTarget } from './resolve';
 import type { DialogInfo } from './pointer';
 import { focusedElement } from './preflight';
+import { scopedDialog } from '../url-policy';
 import { isSensitiveState } from '../perception/masking';
 import { dialogDetail, quote } from '../text';
 import { siteOf } from '../site';
@@ -130,7 +131,7 @@ export class Evidence {
         if (p.frameId === topology.mainFrameId() && p.name === 'networkIdle') this.#idle = true;
       }),
       cdp.on('Page.javascriptDialogOpening', params => {
-        this.#dialog ??= params as DialogInfo;
+        this.#dialog ??= scopedDialog(params as DialogInfo, this.ctx.session.urlPolicy);
       }),
       cdp.on('Page.downloadWillBegin', params => {
         const p = params as { url: string; suggestedFilename: string };
